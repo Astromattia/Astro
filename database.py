@@ -30,9 +30,24 @@ def init_db():
             username TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
             ruolo TEXT NOT NULL DEFAULT 'utente' CHECK (ruolo IN ('admin', 'utente')),
+            data_nascita TEXT,
+            professione TEXT,
+            approvato INTEGER NOT NULL DEFAULT 1,
             creato_il TEXT NOT NULL
         )
     """)
+
+    # Migrazione: se il database esisteva gia prima dell'introduzione di
+    # questi campi, aggiungili senza perdere gli utenti gia presenti.
+    colonne_utenti = {riga["name"] for riga in cur.execute("PRAGMA table_info(utenti)")}
+    if "data_nascita" not in colonne_utenti:
+        cur.execute("ALTER TABLE utenti ADD COLUMN data_nascita TEXT")
+    if "professione" not in colonne_utenti:
+        cur.execute("ALTER TABLE utenti ADD COLUMN professione TEXT")
+    if "approvato" not in colonne_utenti:
+        # Gli utenti gia esistenti (creati prima di questa funzionalita)
+        # sono considerati automaticamente approvati.
+        cur.execute("ALTER TABLE utenti ADD COLUMN approvato INTEGER NOT NULL DEFAULT 1")
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS missioni (

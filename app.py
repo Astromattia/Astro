@@ -14,6 +14,7 @@ from datetime import datetime
 import base64
 import csv
 import io
+from urllib.parse import quote, urlencode
 import streamlit as st
 
 import database as db
@@ -79,24 +80,6 @@ st.markdown("""
         color: #FFFFFF !important;
         font-weight: 500;
     }
-    /* Forza lo sfondo scuro dell'app e i campi di input a prescindere dal
-       tema (chiaro/scuro) impostato nel browser di chi visita la pagina. */
-    [data-testid="stAppViewContainer"], [data-testid="stHeader"], .stApp {
-        background-color: #0B1220 !important;
-    }
-    [data-testid="stHeader"] {
-        background-color: transparent !important;
-    }
-    [data-testid="stSidebar"] {
-        background-color: #0E1626 !important;
-    }
-    input, textarea, select,
-    [data-testid="stTextInput"] input,
-    [data-testid="stTextArea"] textarea {
-        background-color: #182238 !important;
-        color: #E8ECF4 !important;
-        border: 1px solid #26324A !important;
-    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -123,8 +106,12 @@ if "conferma_elimina_missione" not in st.session_state:
     st.session_state.conferma_elimina_missione = None
 if "conferma_elimina_utente" not in st.session_state:
     st.session_state.conferma_elimina_utente = None
+if "utente_in_modifica" not in st.session_state:
+    st.session_state.utente_in_modifica = None
 if "prefill_esterno" not in st.session_state:
     st.session_state.prefill_esterno = None
+if "ultima_registrazione" not in st.session_state:
+    st.session_state.ultima_registrazione = None
 
 
 def vai_a(view, **kwargs):
@@ -260,10 +247,125 @@ def pagina_autenticazione():
         conn.close()
         if utente is None or not verifica_password(password, utente["password_hash"]):
             st.error("Credenziali non valide.")
+        elif not utente["approvato"]:
+            st.warning(
+                "Il tuo account e' stato creato ma e' ancora in attesa di approvazione "
+                "da parte dell'amministratore. Riprova ad accedere piu tardi."
+            )
         else:
             st.session_state.utente = dict(utente)
             st.success(f"Bentornato, {utente['username']}.")
             vai_a("dashboard")
+
+    st.divider()
+    with st.expander("📝 Registrati per consultare l'archivio",
+                      expanded=bool(st.session_state.ultima_registrazione)):
+        st.caption(
+            "Crea il tuo account per consultare, cercare e filtrare le missioni. Il nuovo "
+            "account potra solo consultare l'archivio (sola lettura): se in futuro ti "
+            "servono permessi da amministratore, chiedilo a chi gestisce l'app."
+        )
+
+        if st.session_state.ultima_registrazione:
+            info = st.session_state.ultima_registrazione
+            st.success(
+                "Richiesta inviata! Il tuo account non e' ancora attivo: manca solo "
+                "un ultimo passaggio qui sotto, poi l'amministratore dovra' approvarti."
+            )
+            link_gmail_registrazione = "https://mail.google.com/mail/?" + urlencode({
+                "view": "cm", "fs": 1, "to": info["email_notifica"],
+                "su": info["oggetto"], "body": info["corpo"],
+            })
+            st.link_button(
+                "📧 Apri Gmail e invia la richiesta di approvazione",
+                link_gmail_registrazione, type="primary", use_container_width=True,
+            )
+            st.caption(
+                "Si apre Gmail con destinatario, oggetto e testo gia compilati: devi "
+                "solo premere 'Invia' dentro Gmail (serve essere gia loggato nel browser)."
+            )
+            if st.button("Ho gia inviato, chiudi questo riquadro", key="chiudi_reg_ok"):
+                st.session_state.ultima_registrazione = None
+                st.rerun()
+            st.divider()
+
+        with st.form("form_registrazione", clear_on_submit=True):
+            r_username = st.text_input("Nome utente", key="reg_username")
+            r_password = st.text_input("Password (minimo 6 caratteri)", type="password", key="reg_password")
+            r_conferma = st.text_input("Conferma password", type="password", key="reg_conferma")
+            r_nascita = st.date_input(
+                "Data di nascita", key="reg_nascita",
+                min_value=datetime(1900, 1, 1), max_value=datetime.utcnow(),
+                value=None,
+            )
+            r_professione = st.text_input("Professione", key="reg_professione")
+            r_invia = st.form_submit_button("Registrati", type="primary", use_container_width=True)
+
+        if r_invia:
+            r_username_p = r_username.strip()
+            r_professione_p = r_professione.strip()
+            if not r_username_p or not r_password or not r_professione_p or r_nascita is None:
+                st.error("Tutti i campi sono obbligatori.")
+            elif r_password != r_conferma:
+                st.error("Le due password non coincidono.")
+            elif len(r_password) < 6:
+                st.error("La password deve avere almeno 6 caratteri.")
+            else:
+                conn = db.get_connection()
+                esistente = conn.execute(
+                    "SELECT id FROM utenti WHERE username = ?", (r_username_p,)
+                ).fetchone()
+                if esistente:
+                    conn.close()
+                    st.error("Questo nome utente e gia in uso, scegline un altro.")
+                else:
+                    conn.execute(
+                        "INSERT INTO utenti (username, password_hash, ruolo, data_nascita, "
+                        "professione, approvato, creato_il) VALUES (?, ?, 'utente', ?, ?, 0, ?)",
+                        (r_username_p, genera_hash_password(r_password), r_nascita.isoformat(),
+                         r_professione_p, datetime.utcnow().isoformat(timespec="seconds")),
+                    )
+                    conn.commit()
+                    conn.close()
+
+                    # Tentativo automatico via SMTP, se configurato: non blocca
+                    # ne mostra errori tecnici al nuovo utente in caso di fallimento.
+                    email_notifica = db.leggi_impostazione("email_notifica_registrazioni", "laudandomattia@gmail.com")
+                    smtp_pronto = bool(
+                        db.leggi_impostazione("smtp_host") and db.leggi_impostazione("smtp_utente")
+                        and db.leggi_impostazione("smtp_password") and db.leggi_impostazione("smtp_mittente")
+                    )
+                    corpo_notifica = (
+                        f"Un nuovo utente si e' registrato all'Archivio Missioni Spaziali "
+                        f"e attende la tua approvazione.\n\n"
+                        f"Username: {r_username_p}\n"
+                        f"Data di nascita: {r_nascita.isoformat()}\n"
+                        f"Professione: {r_professione_p}\n"
+                        f"Registrato il: {datetime.utcnow().isoformat(timespec='seconds')} UTC\n\n"
+                        f"Vai su 'Gestione utenti' nell'app per approvarlo."
+                    )
+                    if email_notifica and smtp_pronto:
+                        try:
+                            invia_a_iscritti(
+                                host=db.leggi_impostazione("smtp_host"),
+                                porta=int(db.leggi_impostazione("smtp_porta", "587")),
+                                utente_smtp=db.leggi_impostazione("smtp_utente"),
+                                password_smtp=db.leggi_impostazione("smtp_password"),
+                                mittente=db.leggi_impostazione("smtp_mittente"),
+                                ssl_diretto=db.leggi_impostazione("smtp_ssl_diretto", "0") == "1",
+                                destinatari=[email_notifica],
+                                oggetto=f"Nuova registrazione: {r_username_p}",
+                                corpo=corpo_notifica,
+                            )
+                        except Exception:
+                            pass
+
+                    st.session_state.ultima_registrazione = {
+                        "email_notifica": email_notifica,
+                        "oggetto": f"Nuova registrazione: {r_username_p}",
+                        "corpo": corpo_notifica,
+                    }
+                    st.rerun()
 
     st.divider()
     with st.expander("📰 Iscriviti alla newsletter per restare sempre aggiornato"):
@@ -649,6 +751,11 @@ def pagina_utenti():
                 help="'utente' puo solo consultare l'archivio. 'admin' puo anche aggiungere, modificare, "
                      "eliminare missioni e gestire gli altri utenti.",
             )
+            nuova_nascita = st.date_input(
+                "Data di nascita (opzionale)", value=None,
+                min_value=datetime(1900, 1, 1), max_value=datetime.utcnow(),
+            )
+            nuova_professione = st.text_input("Professione (opzionale)")
             crea = st.form_submit_button("Crea utente", type="primary", use_container_width=True)
 
         if crea:
@@ -665,8 +772,11 @@ def pagina_utenti():
                     st.error("Username gia in uso, scegline un altro.")
                 else:
                     conn.execute(
-                        "INSERT INTO utenti (username, password_hash, ruolo, creato_il) VALUES (?, ?, ?, ?)",
+                        "INSERT INTO utenti (username, password_hash, ruolo, data_nascita, "
+                        "professione, creato_il) VALUES (?, ?, ?, ?, ?, ?)",
                         (nuovo_username, genera_hash_password(nuova_password), nuovo_ruolo,
+                         nuova_nascita.isoformat() if nuova_nascita else None,
+                         nuova_professione.strip() or None,
                          datetime.utcnow().isoformat(timespec="seconds")),
                     )
                     conn.commit()
@@ -677,19 +787,49 @@ def pagina_utenti():
     st.divider()
 
     conn = db.get_connection()
-    utenti = conn.execute("SELECT * FROM utenti ORDER BY creato_il ASC").fetchall()
+    utenti = conn.execute("SELECT * FROM utenti WHERE approvato=1 ORDER BY creato_il ASC").fetchall()
+    in_attesa = conn.execute("SELECT * FROM utenti WHERE approvato=0 ORDER BY creato_il ASC").fetchall()
     numero_admin = conn.execute("SELECT COUNT(*) AS c FROM utenti WHERE ruolo='admin'").fetchone()["c"]
     conn.close()
 
     io = st.session_state.utente
 
+    if in_attesa:
+        st.subheader(f"🕓 In attesa di approvazione ({len(in_attesa)})")
+        st.caption("Richieste arrivate dall'auto-registrazione pubblica: non possono ancora accedere.")
+        for u in in_attesa:
+            with st.container(border=True):
+                a1, a2, a3, a4 = st.columns([1.8, 2, 1, 1])
+                a1.markdown(f"**{u['username']}**")
+                info_extra = " · ".join(filter(None, [u["professione"], u["data_nascita"]]))
+                a2.caption(info_extra or "—")
+                if a3.button("✅ Approva", key=f"approva_{u['id']}", type="primary",
+                              use_container_width=True):
+                    conn = db.get_connection()
+                    conn.execute("UPDATE utenti SET approvato=1 WHERE id=?", (u["id"],))
+                    conn.commit()
+                    conn.close()
+                    st.success(f"'{u['username']}' approvato: ora puo' accedere.")
+                    st.rerun()
+                if a4.button("❌ Rifiuta", key=f"rifiuta_{u['id']}", use_container_width=True):
+                    conn = db.get_connection()
+                    conn.execute("DELETE FROM utenti WHERE id=?", (u["id"],))
+                    conn.commit()
+                    conn.close()
+                    st.warning(f"Richiesta di '{u['username']}' rifiutata ed eliminata.")
+                    st.rerun()
+        st.divider()
+
+    st.subheader("Utenti attivi")
+
     for u in utenti:
         with st.container(border=True):
-            c1, c2, c3, c4, c5 = st.columns([2, 1, 2, 1.3, 1])
+            c1, c2, c3, c4, c5, c6 = st.columns([1.8, 1, 1.6, 1.5, 1.1, 1])
             etichetta = u["username"] + (" (tu)" if u["id"] == io["id"] else "")
             c1.markdown(f"**{etichetta}**")
             c2.markdown(f"`{u['ruolo']}`")
-            c3.caption(u["creato_il"])
+            info_extra = " · ".join(filter(None, [u["professione"], u["data_nascita"]]))
+            c3.caption(info_extra or "—")
 
             if u["ruolo"] == "admin":
                 disabilita = (u["id"] == io["id"] and numero_admin <= 1)
@@ -708,10 +848,88 @@ def pagina_utenti():
                     conn.close()
                     st.rerun()
 
+            if c5.button("Modifica", key=f"modifica_{u['id']}", use_container_width=True):
+                st.session_state.utente_in_modifica = (
+                    None if st.session_state.get("utente_in_modifica") == u["id"] else u["id"]
+                )
+                st.rerun()
+
             if u["id"] != io["id"]:
-                if c5.button("Elimina", key=f"elimina_{u['id']}", use_container_width=True):
+                if c6.button("Elimina", key=f"elimina_{u['id']}", use_container_width=True):
                     st.session_state.conferma_elimina_utente = u["id"]
                     st.rerun()
+
+            if st.session_state.get("utente_in_modifica") == u["id"]:
+                with st.form(f"form_modifica_{u['id']}"):
+                    m_username = st.text_input("Username", value=u["username"])
+                    valore_nascita = None
+                    if u["data_nascita"]:
+                        try:
+                            valore_nascita = datetime.fromisoformat(u["data_nascita"])
+                        except ValueError:
+                            valore_nascita = None
+                    m_nascita = st.date_input(
+                        "Data di nascita", value=valore_nascita,
+                        min_value=datetime(1900, 1, 1), max_value=datetime.utcnow(),
+                    )
+                    m_professione = st.text_input("Professione", value=u["professione"] or "")
+                    m_nuova_password = st.text_input(
+                        "Nuova password (lascia vuoto per non cambiarla)", type="password"
+                    )
+                    cc1, cc2 = st.columns(2)
+                    salva_modifica = cc1.form_submit_button(
+                        "Salva modifiche", type="primary", use_container_width=True
+                    )
+                    annulla_modifica = cc2.form_submit_button("Annulla", use_container_width=True)
+
+                if annulla_modifica:
+                    st.session_state.utente_in_modifica = None
+                    st.rerun()
+
+                if salva_modifica:
+                    m_username_p = m_username.strip()
+                    if not m_username_p:
+                        st.error("Lo username non puo essere vuoto.")
+                    elif m_nuova_password and len(m_nuova_password) < 6:
+                        st.error("La nuova password deve avere almeno 6 caratteri.")
+                    else:
+                        conn = db.get_connection()
+                        duplicato = conn.execute(
+                            "SELECT id FROM utenti WHERE username = ? AND id != ?",
+                            (m_username_p, u["id"]),
+                        ).fetchone()
+                        if duplicato:
+                            conn.close()
+                            st.error("Username gia in uso da un altro account.")
+                        else:
+                            if m_nuova_password:
+                                conn.execute(
+                                    "UPDATE utenti SET username=?, data_nascita=?, professione=?, "
+                                    "password_hash=? WHERE id=?",
+                                    (m_username_p, m_nascita.isoformat() if m_nascita else None,
+                                     m_professione.strip() or None,
+                                     genera_hash_password(m_nuova_password), u["id"]),
+                                )
+                            else:
+                                conn.execute(
+                                    "UPDATE utenti SET username=?, data_nascita=?, professione=? "
+                                    "WHERE id=?",
+                                    (m_username_p, m_nascita.isoformat() if m_nascita else None,
+                                     m_professione.strip() or None, u["id"]),
+                                )
+                            conn.commit()
+                            conn.close()
+                            st.session_state.utente_in_modifica = None
+                            if u["id"] == io["id"]:
+                                # Se ho appena modificato il mio stesso account,
+                                # aggiorno anche i dati in sessione.
+                                conn = db.get_connection()
+                                st.session_state.utente = dict(
+                                    conn.execute("SELECT * FROM utenti WHERE id=?", (u["id"],)).fetchone()
+                                )
+                                conn.close()
+                            st.success("Dati utente aggiornati.")
+                            st.rerun()
 
     if st.session_state.conferma_elimina_utente:
         target_id = st.session_state.conferma_elimina_utente
@@ -800,6 +1018,7 @@ def pagina_newsletter():
         smtp_utente = db.leggi_impostazione("smtp_utente", "")
         smtp_mittente = db.leggi_impostazione("smtp_mittente", "")
         smtp_ssl_diretto = db.leggi_impostazione("smtp_ssl_diretto", "0") == "1"
+        email_notifica_reg = db.leggi_impostazione("email_notifica_registrazioni", "laudandomattia@gmail.com")
 
         with st.form("form_smtp"):
             c1, c2 = st.columns([2, 1])
@@ -811,6 +1030,11 @@ def pagina_newsletter():
             n_mittente = st.text_input("Indirizzo mittente mostrato ai destinatari", value=smtp_mittente)
             n_ssl_diretto = st.checkbox("Usa connessione SSL diretta (porta 465) invece di STARTTLS",
                                          value=smtp_ssl_diretto)
+            n_email_notifica = st.text_input(
+                "Email a cui avvisarti delle nuove registrazioni", value=email_notifica_reg,
+                help="Ogni volta che qualcuno crea un account da solo dalla schermata di "
+                     "login, riceverai qui un'email con i suoi dati.",
+            )
             salva_smtp = st.form_submit_button("Salva configurazione", type="primary", use_container_width=True)
 
         if salva_smtp:
@@ -822,6 +1046,7 @@ def pagina_newsletter():
                 db.scrivi_impostazione("smtp_utente", n_utente.strip())
                 db.scrivi_impostazione("smtp_mittente", n_mittente.strip())
                 db.scrivi_impostazione("smtp_ssl_diretto", "1" if n_ssl_diretto else "0")
+                db.scrivi_impostazione("email_notifica_registrazioni", n_email_notifica.strip())
                 if n_password:
                     db.scrivi_impostazione("smtp_password", n_password)
                 st.success("Configurazione email salvata.")
@@ -840,7 +1065,34 @@ def pagina_newsletter():
     st.metric("Iscritti totali", len(iscritti))
 
     st.write("")
-    st.subheader("✉️ Invia un messaggio a tutti gli iscritti")
+    st.subheader("📧 Invio rapido tramite Gmail (senza configurare SMTP)")
+    st.caption(
+        "Apre una bozza su Gmail con tutti gli iscritti gia inseriti in CCN (nascosti "
+        "tra loro), oggetto e testo gia compilati. Devi essere gia loggato su Gmail nel "
+        "browser; a quel punto ti basta premere 'Invia' dentro Gmail."
+    )
+    oggetto_rapido = st.text_input("Oggetto", key="oggetto_rapido",
+                                    placeholder="Novita nell'Archivio Missioni Spaziali")
+    corpo_rapido = st.text_area("Testo del messaggio", key="corpo_rapido", height=150,
+                                 placeholder="Scrivi qui il testo che vuoi inviare a tutti gli iscritti...")
+    bcc_lista = ",".join(i["email"] for i in iscritti)
+    link_gmail_tutti = "https://mail.google.com/mail/?" + urlencode({
+        "view": "cm", "fs": 1, "bcc": bcc_lista,
+        "su": oggetto_rapido, "body": corpo_rapido,
+    })
+    st.link_button(
+        f"📧 Apri bozza su Gmail per tutti gli iscritti ({len(iscritti)})",
+        link_gmail_tutti, type="primary", use_container_width=True,
+    )
+    if len(iscritti) > 300:
+        st.caption(
+            "⚠️ Con molti iscritti il link potrebbe risultare troppo lungo per essere "
+            "aperto correttamente dal browser: in quel caso usa l'invio via SMTP qui sotto."
+        )
+
+    st.divider()
+
+    st.subheader("✉️ Invia un messaggio a tutti gli iscritti (via SMTP)")
     st.caption(
         "I destinatari vengono letti automaticamente dall'elenco iscritti qui sotto: non serve "
         "scrivere nessun indirizzo a mano. Per escludere qualcuno, eliminalo dall'elenco prima di inviare."
@@ -906,11 +1158,16 @@ def pagina_newsletter():
     st.write("")
     for i in iscritti:
         with st.container(border=True):
-            c1, c2, c3, c4 = st.columns([1.5, 1.3, 2, 1])
+            c1, c2, c3, c4, c5 = st.columns([1.5, 1.3, 2, 1.2, 1])
             c1.markdown(f"**{i['username']}**")
             c2.write(i["telefono"])
             c3.write(i["email"])
-            if c4.button("Elimina", key=f"del_newsletter_{i['id']}", use_container_width=True):
+            link_gmail = (
+                "https://mail.google.com/mail/?view=cm&fs=1&to="
+                + quote(i["email"])
+            )
+            c4.link_button("📧 Invia email", link_gmail, use_container_width=True)
+            if c5.button("Elimina", key=f"del_newsletter_{i['id']}", use_container_width=True):
                 conn = db.get_connection()
                 conn.execute("DELETE FROM iscritti_newsletter WHERE id=?", (i["id"],))
                 conn.commit()
