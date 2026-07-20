@@ -1,9 +1,0 @@
-# Database locale: non va versionato, nasce vuoto ad ogni deploy
-missioni.db
-
-# File temporanei Python
-__pycache__/
-*.pyc
-
-# File di sistema
-.DS_Store
