@@ -16,8 +16,6 @@ import csv
 import io
 from urllib.parse import quote, urlencode
 import streamlit as st
-
-import database as db
 from auth import genera_hash_password, verifica_password
 from voli_esterni import voli_precedenti, voli_programmati, voli_per_parola_chiave
 from email_utils import invia_a_iscritti
