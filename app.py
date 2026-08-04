@@ -14,26 +14,21 @@ from datetime import datetime
 import base64
 import csv
 import io
-from urllib.parse import quote, urlencode
+import re
+import requests
+from urllib.parse import quote, urlencode, urlparse, parse_qs
 import streamlit as st
 
 import database as db
 from auth import genera_hash_password, verifica_password
 from voli_esterni import voli_precedenti, voli_programmati, voli_per_parola_chiave
 from email_utils import invia_a_iscritti
-
 from cielo_notturno import (
-    geocodifica_indirizzo,
-    geocodifica_indirizzo_debug,
-    passaggi_satelliti,
-    passaggi_starlink,
-    pianeti_visibili,
-    stelle_visibili,
-    previsioni_sole,
-    dati_luna,
-    sciami_attivi,
-    meteo_osservativo,
+    geocodifica_indirizzo, passaggi_satelliti, pianeti_visibili, stelle_visibili,
+    satelliti_vicini, sole_settimana, fase_lunare, si_vede_stasera,
 )
+from notizie_spaziali import recupera_tutte_le_notizie
+from quiz_dati import DOMANDE, SOGLIE_BADGE
 
 # ---------------------------------------------------------------------------
 # Configurazione pagina
@@ -125,6 +120,10 @@ if "prefill_esterno" not in st.session_state:
     st.session_state.prefill_esterno = None
 if "ultima_registrazione" not in st.session_state:
     st.session_state.ultima_registrazione = None
+if "astronauta_in_modifica" not in st.session_state:
+    st.session_state.astronauta_in_modifica = None
+if "conferma_elimina_astronauta" not in st.session_state:
+    st.session_state.conferma_elimina_astronauta = None
 
 
 def vai_a(view, **kwargs):
@@ -184,31 +183,34 @@ def _cache_stelle_visibili(lat, lon):
     return stelle_visibili(lat, lon)
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def _cache_previsioni_sole(lat, lon):
-    return previsioni_sole(lat, lon)
-
-
 @st.cache_data(ttl=900, show_spinner=False)
-def _cache_luna(lat, lon):
-    return dati_luna(lat, lon)
+def _cache_satelliti_vicini(lat, lon):
+    return satelliti_vicini(lat, lon)
 
 
-# Starlink richiede di scaricare ed elaborare l'intero catalogo satelliti
-# attivi: TTL piu' lungo per non appesantire ogni caricamento pagina.
-@st.cache_data(ttl=1800, show_spinner=False)
-def _cache_passaggi_starlink(lat, lon):
-    return passaggi_starlink(lat, lon)
+@st.cache_data(ttl=21600, show_spinner=False)
+def _cache_sole_settimana(lat, lon):
+    return sole_settimana(lat, lon)
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def _cache_sciami_attivi():
-    return sciami_attivi()
+def _cache_fase_lunare(lat, lon):
+    return fase_lunare(lat, lon)
 
 
-@st.cache_data(ttl=600, show_spinner=False)
-def _cache_meteo_osservativo(lat, lon):
-    return meteo_osservativo(lat, lon)
+@st.cache_data(ttl=1800, show_spinner=False)
+def _cache_si_vede_stasera(lat, lon):
+    return si_vede_stasera(lat, lon)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _cache_prossimi_lanci_estesi():
+    return voli_programmati(limite=40)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _cache_notizie_spaziali():
+    return recupera_tutte_le_notizie()
 
 
 # ---------------------------------------------------------------------------
@@ -480,6 +482,16 @@ def barra_laterale():
             vai_a("dashboard")
         if st.button("🌌 Osservatorio Astronomico", use_container_width=True):
             vai_a("cielo")
+        if st.button("🚀 Prossimi lanci", use_container_width=True):
+            vai_a("lanci")
+        if st.button("📰 News spaziali", use_container_width=True):
+            vai_a("news")
+        if st.button("👨‍🚀 Astronauti", use_container_width=True):
+            vai_a("astronauti")
+        if st.button("🎯 Quiz spaziali", use_container_width=True):
+            vai_a("quiz")
+        if st.button("🔴 Live", use_container_width=True):
+            vai_a("live")
         if e_admin():
             if st.button("➕ Nuova missione", use_container_width=True):
                 vai_a("form_missione", missione_selezionata=None)
@@ -1049,7 +1061,7 @@ def pagina_impostazioni():
 
 
 # ---------------------------------------------------------------------------
-# Pagina: cielo notturno (satelliti, pianeti, stelle visibili da un luogo)
+# Pagina: osservatorio astronomico (satelliti, pianeti, stelle, sole, luna, meteo)
 # ---------------------------------------------------------------------------
 
 def pagina_cielo():
@@ -1078,16 +1090,12 @@ def pagina_cielo():
                     st.error("Inserisci un indirizzo.")
                 else:
                     with st.spinner("Cerco la posizione..."):
-                        trovato, errori_geocodifica = geocodifica_indirizzo_debug(nuovo_indirizzo.strip())
+                        trovato = geocodifica_indirizzo(nuovo_indirizzo.strip())
                     if trovato is None:
                         st.error(
                             "Indirizzo non trovato. Prova a scrivere in modo piu generico "
                             "(es. solo la citta), o controlla la connessione internet."
                         )
-                        if errori_geocodifica:
-                            with st.expander("Dettagli tecnici dell'errore"):
-                                for e in errori_geocodifica:
-                                    st.code(e)
                     else:
                         db.scrivi_impostazione("cielo_indirizzo", nuovo_indirizzo.strip())
                         db.scrivi_impostazione("cielo_lat", str(trovato["lat"]))
@@ -1107,58 +1115,30 @@ def pagina_cielo():
         return
 
     lat_f, lon_f = float(lat), float(lon)
-
     st.caption(f"📍 Osservazione da: {localita}")
-    st.caption("I dati si basano su effemeridi ufficiali NASA/JPL, dati NORAD/Celestrak e Open-Meteo.")
+    st.caption(
+        "I dati si basano su effemeridi ufficiali (NASA/NORAD): la prima volta "
+        "il calcolo puo richiedere qualche secondo in piu per scaricare i dati necessari."
+    )
 
-    st.divider()
-
-    # ---------------------------------------------------------------
-    # Sole
-    # ---------------------------------------------------------------
-    st.subheader("☀️ Sole")
     try:
-        with st.spinner("Calcolo alba e tramonto..."):
-            giorni_sole = _cache_previsioni_sole(lat_f, lon_f)
-        oggi_sole = giorni_sole[0]
-        c1, c2 = st.columns(2)
-        c1.metric("Alba oggi", oggi_sole["alba"])
-        c2.metric("Tramonto oggi", oggi_sole["tramonto"])
-        with st.expander("Prossimi 7 giorni"):
-            for g in giorni_sole:
-                st.markdown(f"**{g['data']}** • 🌅 {g['alba']} • 🌇 {g['tramonto']}")
+        with st.spinner("Valuto le condizioni..."):
+            verdetto = _cache_si_vede_stasera(lat_f, lon_f)
+        st.info(verdetto["verdetto"])
+        vc1, vc2 = st.columns(2)
+        if verdetto["nuvolosita_percento"] is not None:
+            vc1.metric("☁️ Nuvolosita prevista", f"{verdetto['nuvolosita_percento']}%")
+        vc2.metric("🌙 Illuminazione lunare", f"{verdetto['illuminazione_lunare_percento']}%")
     except Exception:
-        st.warning("Impossibile calcolare alba e tramonto.")
+        st.warning("Previsioni meteo non disponibili al momento.")
 
     st.divider()
 
-    # ---------------------------------------------------------------
-    # Luna
-    # ---------------------------------------------------------------
-    st.subheader("🌙 Luna")
-    luna = _cache_luna(lat_f, lon_f)
-    if luna:
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Fase", luna["fase"])
-        c2.metric("Illuminazione", f"{luna['illuminazione']}%")
-        c3.metric("Altezza ora", f"{luna['altezza']}° {luna['direzione']}")
-        c4, c5 = st.columns(2)
-        c4.metric("Alba luna", luna["alba"])
-        c5.metric("Tramonto luna", luna["tramonto"])
-    else:
-        st.warning("Dati sulla Luna non disponibili al momento. Riprova piu tardi.")
+    col_satelliti, col_pianeti, col_stelle = st.columns(3)
 
-    st.divider()
-
-    # ---------------------------------------------------------------
-    # Satelliti (stazioni + Starlink)
-    # ---------------------------------------------------------------
-    st.subheader("🛰️ Satelliti")
-
-    tab_stazioni, tab_starlink = st.tabs(["Stazioni spaziali", "Starlink"])
-
-    with tab_stazioni:
-        st.caption("Prossimi passaggi visibili a occhio nudo (prossime 48 ore): ISS, Tiangong, Hubble.")
+    with col_satelliti:
+        st.subheader("🛰️ Stazioni spaziali")
+        st.caption("Prossimi passaggi visibili a occhio nudo (prossime 48 ore)")
         try:
             with st.spinner("Calcolo i passaggi..."):
                 passaggi = _cache_passaggi_satelliti(lat_f, lon_f)
@@ -1175,36 +1155,6 @@ def pagina_cielo():
                     st.markdown("<hr style='margin:0.4rem 0; opacity:0.15;'>", unsafe_allow_html=True)
         except Exception:
             st.warning("Dati sui satelliti non disponibili al momento. Riprova piu tardi.")
-
-    with tab_starlink:
-        st.caption(
-            "Passaggi visibili dei satelliti Starlink piu' vicini alla tua posizione "
-            "(prossime 24 ore). Il calcolo su tutto il gruppo Starlink puo' richiedere "
-            "qualche secondo la prima volta."
-        )
-        try:
-            with st.spinner("Scarico i TLE Starlink e calcolo i passaggi..."):
-                passaggi_sl = _cache_passaggi_starlink(lat_f, lon_f)
-            if not passaggi_sl:
-                st.write("Nessun passaggio Starlink visibile previsto nelle prossime 24 ore.")
-            else:
-                for p in passaggi_sl:
-                    st.markdown(f"**{p['satellite']}**")
-                    st.caption(
-                        f"{p['inizio'].strftime('%d/%m %H:%M')} - "
-                        f"{p['fine'].strftime('%H:%M')} UTC · "
-                        f"fino a {p['altezza_massima']}° verso {p['direzione']}"
-                    )
-                    st.markdown("<hr style='margin:0.4rem 0; opacity:0.15;'>", unsafe_allow_html=True)
-        except Exception:
-            st.warning("Dati Starlink non disponibili al momento. Riprova piu tardi.")
-
-    st.divider()
-
-    # ---------------------------------------------------------------
-    # Pianeti e Stelle
-    # ---------------------------------------------------------------
-    col_pianeti, col_stelle = st.columns(2)
 
     with col_pianeti:
         st.subheader("🪐 Pianeti")
@@ -1234,47 +1184,605 @@ def pagina_cielo():
             else:
                 for s in stelle:
                     st.markdown(f"**{s['nome']}**")
-                    st.caption(f"Altezza {s['altezza']}° verso {s['direzione']} · magnitudine {s['magnitudine']}")
+                    st.caption(f"Altezza {s['altezza']}° verso {s['direzione']}")
                     st.markdown("<hr style='margin:0.4rem 0; opacity:0.15;'>", unsafe_allow_html=True)
         except Exception:
             st.warning("Dati sulle stelle non disponibili al momento. Riprova piu tardi.")
 
     st.divider()
 
-    # ---------------------------------------------------------------
-    # Sciami meteorici
-    # ---------------------------------------------------------------
-    st.subheader("☄️ Sciami meteorici attivi")
+    st.subheader("🛰️ Satelliti piu vicini ora")
+    st.caption("Dal catalogo dei satelliti noti per essere visibili a occhio nudo")
     try:
-        sciami = _cache_sciami_attivi()
-        if not sciami:
-            st.info("Nessuno sciame meteorico principale e' attivo oggi.")
+        with st.spinner("Cerco i satelliti piu vicini..."):
+            vicini = _cache_satelliti_vicini(lat_f, lon_f)
+        if not vicini:
+            st.write("Nessun satellite sopra l'orizzonte al momento, tra quelli noti come visibili.")
         else:
-            for s in sciami:
-                st.markdown(f"**{s['nome']}**")
-                st.caption(f"Periodo di attivita': {s['periodo']} · Picco: {s['picco']}")
-                st.markdown("<hr style='margin:0.4rem 0; opacity:0.15;'>", unsafe_allow_html=True)
+            colonne_vicini = st.columns(len(vicini))
+            for colonna, sat in zip(colonne_vicini, vicini):
+                with colonna:
+                    st.markdown(f"**{sat['nome']}**")
+                    st.caption(
+                        f"{sat['distanza_km']:,} km · {sat['altezza']}° verso {sat['direzione']}"
+                        .replace(",", ".")
+                    )
     except Exception:
-        st.warning("Dati sugli sciami meteorici non disponibili al momento.")
+        st.warning("Dati sui satelliti vicini non disponibili al momento.")
 
     st.divider()
 
-    # ---------------------------------------------------------------
-    # Meteo osservativo
-    # ---------------------------------------------------------------
-    st.subheader("☁️ Meteo osservativo")
+    col_sole, col_luna = st.columns(2)
+
+    with col_sole:
+        st.subheader("☀️ Sole — prossimi 7 giorni")
+        try:
+            with st.spinner("Calcolo alba e tramonto..."):
+                settimana = _cache_sole_settimana(lat_f, lon_f)
+            if not settimana:
+                st.write("Dati non disponibili.")
+            else:
+                for giorno in settimana:
+                    st.write(f"**{giorno['data']}** · 🌅 {giorno['alba']} — 🌇 {giorno.get('tramonto', '—')}")
+        except Exception:
+            st.warning("Dati sul sole non disponibili al momento.")
+
+    with col_luna:
+        st.subheader("🌙 Luna")
+        try:
+            with st.spinner("Calcolo la fase lunare..."):
+                luna = _cache_fase_lunare(lat_f, lon_f)
+            st.write(f"**Fase attuale:** {luna['fase_attuale']}")
+            st.write(f"**Illuminazione:** {luna['illuminazione_percento']}%")
+            if luna["prossime_fasi"]:
+                st.caption("Prossime fasi principali:")
+                for f in luna["prossime_fasi"]:
+                    st.caption(f"· {f['fase']} — {f['data']}")
+        except Exception:
+            st.warning("Dati sulla luna non disponibili al momento.")
+
+
+# ---------------------------------------------------------------------------
+# Pagina: prossimi lanci (con countdown)
+# ---------------------------------------------------------------------------
+
+def _countdown(data_iso):
+    """Trasforma una data ISO (YYYY-MM-DD) in un countdown leggibile in italiano."""
+    if not data_iso:
+        return "Data da confermare"
     try:
-        with st.spinner("Controllo le condizioni meteo..."):
-            meteo = _cache_meteo_osservativo(lat_f, lon_f)
-        if meteo:
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Copertura nuvolosa", f"{meteo['copertura_nuvole']}%")
-            c2.metric("Visibilita'", f"{meteo['visibilita_km']} km")
-            c3.metric("Condizioni per l'osservazione", meteo["valutazione"])
-        else:
-            st.warning("Dati meteo non disponibili al momento. Riprova piu tardi.")
+        data_lancio = datetime.strptime(data_iso, "%Y-%m-%d").date()
+    except ValueError:
+        return "Data da confermare"
+
+    giorni = (data_lancio - datetime.utcnow().date()).days
+    if giorni < 0:
+        return "Gia lanciato"
+    if giorni == 0:
+        return "🔴 Oggi!"
+    if giorni == 1:
+        return "🟠 Domani"
+    if giorni <= 7:
+        return f"🟡 Tra {giorni} giorni"
+    return f"Tra {giorni} giorni"
+
+
+def pagina_lanci():
+    if st.button("← Torna all'archivio"):
+        vai_a("dashboard")
+
+    st.title("🚀 Prossimi lanci")
+    st.caption(
+        "Dati aggiornati ogni 30 minuti, dalla stessa fonte gratuita usata per "
+        "i pannelli dei voli in sidebar (Launch Library 2 / The Space Devs)."
+    )
+    st.divider()
+
+    try:
+        with st.spinner("Carico i prossimi lanci..."):
+            lanci = _cache_prossimi_lanci_estesi()
     except Exception:
-        st.warning("Dati meteo non disponibili al momento. Riprova piu tardi.")
+        st.warning(
+            "Non riesco a recuperare i prossimi lanci in questo momento "
+            "(servizio esterno non raggiungibile). Riprova piu tardi."
+        )
+        return
+
+    if not lanci:
+        st.info("Nessun lancio programmato trovato al momento.")
+        return
+
+    for volo in lanci:
+        with st.container(border=True):
+            c1, c2 = st.columns([4, 1.3])
+            with c1:
+                st.markdown(f"**{volo['nome']}**")
+                dettagli = " · ".join(filter(None, [volo["veicolo"], volo["sito"]]))
+                if dettagli:
+                    st.caption(dettagli)
+                st.caption(f"Stato: {volo['stato'] or 'Non specificato'}")
+            with c2:
+                st.markdown(f"**{_countdown(volo['data'])}**")
+                if volo["data"]:
+                    st.caption(volo["data"])
+
+
+# ---------------------------------------------------------------------------
+# Pagina: news spaziali (NASA / ESA)
+# ---------------------------------------------------------------------------
+
+def pagina_news():
+    if st.button("← Torna all'archivio"):
+        vai_a("dashboard")
+
+    st.title("📰 News spaziali")
+    st.caption("Ultime notizie dai feed ufficiali di NASA ed ESA, aggiornate ogni 30 minuti.")
+    st.divider()
+
+    try:
+        with st.spinner("Carico le notizie..."):
+            notizie_per_fonte = _cache_notizie_spaziali()
+    except Exception:
+        st.warning("Non riesco a recuperare le notizie in questo momento. Riprova piu tardi.")
+        return
+
+    col_nasa, col_esa = st.columns(2)
+    intestazioni = {"NASA": ("🇺🇸 NASA", col_nasa), "ESA": ("🇪🇺 ESA", col_esa)}
+
+    for fonte, (etichetta, colonna) in intestazioni.items():
+        with colonna:
+            st.subheader(etichetta)
+            notizie = notizie_per_fonte.get(fonte, [])
+            if not notizie:
+                st.info(f"Nessuna notizia {fonte} disponibile al momento.")
+                continue
+            for n in notizie:
+                with st.container(border=True):
+                    st.markdown(f"**[{n['titolo']}]({n['link']})**")
+                    if n["data"]:
+                        st.caption(n["data"])
+
+
+# ---------------------------------------------------------------------------
+# Pagina: archivio astronauti
+# ---------------------------------------------------------------------------
+
+def pagina_astronauti():
+    if st.button("← Torna all'archivio"):
+        vai_a("dashboard")
+
+    st.title("👨‍🚀 Archivio astronauti")
+
+    if e_admin():
+        if st.button("⭐ Carica astronauti famosi (Parmitano, Cristoforetti, Gagarin, ecc.)"):
+            aggiunti = db.popola_astronauti_famosi()
+            if aggiunti:
+                st.success(f"Aggiunti {aggiunti} nuovi astronauti all'archivio.")
+                st.rerun()
+            else:
+                st.info("Sono gia tutti presenti nell'archivio.")
+
+        with st.expander("➕ Aggiungi astronauta"):
+            with st.form("form_nuovo_astronauta", clear_on_submit=True):
+                nome = st.text_input("Nome")
+                c1, c2 = st.columns(2)
+                nazionalita = c1.text_input("Nazionalita")
+                agenzia = c2.text_input("Agenzia (es. NASA, ESA, Roscosmos)")
+                missioni_effettuate = st.text_input("Missioni effettuate (elenco separato da virgole)")
+                ore_nello_spazio = st.number_input("Ore totali nello spazio", min_value=0.0, step=1.0)
+                biografia = st.text_area("Breve biografia", height=100)
+                crea = st.form_submit_button("Aggiungi", type="primary", use_container_width=True)
+
+            if crea:
+                if not nome.strip():
+                    st.error("Il nome e' obbligatorio.")
+                else:
+                    db.inserisci_astronauta(
+                        nome.strip(), nazionalita.strip() or None, agenzia.strip() or None,
+                        missioni_effettuate.strip() or None, ore_nello_spazio,
+                        biografia.strip() or None, st.session_state.utente["username"],
+                    )
+                    st.success(f"'{nome}' aggiunto all'archivio.")
+                    st.rerun()
+
+    st.divider()
+    ricerca = st.text_input("🔎 Cerca per nome, nazionalita o agenzia", key="ricerca_astronauti")
+
+    astronauti = db.elenco_astronauti()
+    if ricerca.strip():
+        chiave = ricerca.strip().lower()
+        astronauti = [
+            a for a in astronauti
+            if chiave in (a["nome"] or "").lower()
+            or chiave in (a["nazionalita"] or "").lower()
+            or chiave in (a["agenzia"] or "").lower()
+        ]
+
+    if not astronauti:
+        st.info("Nessun astronauta trovato." if ricerca.strip() else
+                 "Nessun astronauta ancora nell'archivio.")
+        return
+
+    for a in astronauti:
+        with st.container(border=True):
+            st.markdown(f"### {a['nome']}")
+            info = " · ".join(filter(None, [a["nazionalita"], a["agenzia"]]))
+            if info:
+                st.caption(info)
+            if a["missioni_effettuate"]:
+                st.write(f"**Missioni:** {a['missioni_effettuate']}")
+            if a["ore_nello_spazio"]:
+                st.write(f"**Ore nello spazio:** {a['ore_nello_spazio']:.0f}")
+            if a["biografia"]:
+                st.write(a["biografia"])
+
+            if e_admin():
+                bc1, bc2 = st.columns(2)
+                if bc1.button("Modifica", key=f"mod_astro_{a['id']}", use_container_width=True):
+                    st.session_state.astronauta_in_modifica = (
+                        None if st.session_state.astronauta_in_modifica == a["id"] else a["id"]
+                    )
+                    st.rerun()
+                if bc2.button("Elimina", key=f"elim_astro_{a['id']}", use_container_width=True):
+                    st.session_state.conferma_elimina_astronauta = a["id"]
+                    st.rerun()
+
+            if st.session_state.conferma_elimina_astronauta == a["id"]:
+                st.warning(f"Confermi l'eliminazione di **{a['nome']}**?")
+                cc1, cc2 = st.columns(2)
+                if cc1.button("Si, elimina", key=f"conferma_elim_astro_{a['id']}", type="primary"):
+                    db.elimina_astronauta(a["id"])
+                    st.session_state.conferma_elimina_astronauta = None
+                    st.success("Astronauta eliminato.")
+                    st.rerun()
+                if cc2.button("Annulla", key=f"annulla_elim_astro_{a['id']}"):
+                    st.session_state.conferma_elimina_astronauta = None
+                    st.rerun()
+
+            if e_admin() and st.session_state.astronauta_in_modifica == a["id"]:
+                with st.form(f"form_modifica_astro_{a['id']}"):
+                    m_nome = st.text_input("Nome", value=a["nome"])
+                    mc1, mc2 = st.columns(2)
+                    m_nazionalita = mc1.text_input("Nazionalita", value=a["nazionalita"] or "")
+                    m_agenzia = mc2.text_input("Agenzia", value=a["agenzia"] or "")
+                    m_missioni = st.text_input("Missioni effettuate", value=a["missioni_effettuate"] or "")
+                    m_ore = st.number_input("Ore nello spazio", min_value=0.0, step=1.0,
+                                             value=float(a["ore_nello_spazio"] or 0))
+                    m_bio = st.text_area("Biografia", value=a["biografia"] or "", height=100)
+                    salva, annulla = st.columns(2)
+                    salva_click = salva.form_submit_button("Salva", type="primary", use_container_width=True)
+                    annulla_click = annulla.form_submit_button("Annulla", use_container_width=True)
+
+                if salva_click:
+                    if not m_nome.strip():
+                        st.error("Il nome e' obbligatorio.")
+                    else:
+                        db.aggiorna_astronauta(
+                            a["id"], m_nome.strip(), m_nazionalita.strip() or None,
+                            m_agenzia.strip() or None, m_missioni.strip() or None,
+                            m_ore, m_bio.strip() or None,
+                        )
+                        st.session_state.astronauta_in_modifica = None
+                        st.success("Dati aggiornati.")
+                        st.rerun()
+                if annulla_click:
+                    st.session_state.astronauta_in_modifica = None
+                    st.rerun()
+
+
+# ---------------------------------------------------------------------------
+# Pagina: live streaming (Starbase, ISS, Volare Space) — incorporate nel sito
+# ---------------------------------------------------------------------------
+
+# Pagine "/live" dei canali: YouTube reindirizza sempre alla diretta in
+# corso in quel momento su quel canale, quindi restano valide nel tempo
+# anche quando il video specifico cambia.
+CANALI_LIVE = [
+    {
+        "titolo": "🛰️ ISS — vista dalla Terra (NASA ufficiale)",
+        "descrizione": "Diretta ufficiale NASA dalla Stazione Spaziale Internazionale, 24 ore su 24.",
+        "url_live": "https://www.youtube.com/@NASA/live",
+    },
+    {
+        "titolo": "🚀 Starbase 24/7 (NASASpaceflight)",
+        "descrizione": "Diretta continua del sito Starship/Super Heavy di SpaceX in Texas.",
+        "url_live": "https://www.youtube.com/@NASASpaceflight/live",
+    },
+    {
+        "titolo": "🚀 Starbase 24/7 — multi camera (LabPadre)",
+        "descrizione": "Altra diretta continua di Starbase, con piu telecamere.",
+        "url_live": "https://www.youtube.com/@LabPadre/live",
+    },
+    {
+        "titolo": "🇮🇹 Volare Space",
+        "descrizione": "Canale italiano dedicato allo spazio: lanci, dirette e approfondimenti.",
+        "url_live": "https://www.youtube.com/@volarespace/live",
+    },
+]
+
+
+_sessione_youtube = requests.Session()
+_sessione_youtube.cookies.set("CONSENT", "YES+cb.20210328-17-p0.en", domain=".youtube.com")
+
+
+def _richiesta_youtube(url):
+    """Richiesta HTTP a una pagina YouTube, con un cookie che indica di
+    aver gia' accettato l'informativa cookie: senza, dall'Europa Google
+    restituisce spesso una pagina di consenso (consent.youtube.com)
+    invece del contenuto vero, e la ricerca del video fallirebbe sempre.
+
+    Se nonostante il cookie arriva comunque il reindirizzamento alla
+    pagina di consenso, recupera l'indirizzo originale nascosto nel
+    parametro "continue" e riprova direttamente su quello."""
+    intestazioni = {"User-Agent": "Mozilla/5.0 (compatibile; ArchivioMissioniSpaziali/1.0)"}
+    risposta = _sessione_youtube.get(url, timeout=12, headers=intestazioni)
+
+    if "consent.youtube.com" in risposta.url:
+        parametri = parse_qs(urlparse(risposta.url).query)
+        url_originale = (parametri.get("continue") or [None])[0]
+        if url_originale:
+            risposta = _sessione_youtube.get(url_originale, timeout=12, headers=intestazioni)
+
+    return risposta
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _video_live_attuale(url_pagina_live):
+    """Trova il video attualmente in diretta su una pagina canale/live di
+    YouTube, cosi' si puo' incorporare nel sito senza uscire su YouTube.
+
+    Restituisce l'ID dell'11 caratteri del video, oppure None se il
+    canale non e' in diretta in questo momento o non e' raggiungibile.
+    """
+    try:
+        risposta = _richiesta_youtube(url_pagina_live)
+        risposta.raise_for_status()
+    except Exception:
+        return None
+
+    corrispondenza = re.search(r'"videoId":"([a-zA-Z0-9_-]{11})"', risposta.text)
+    return corrispondenza.group(1) if corrispondenza else None
+
+
+def _scarica_pagina_streams(url_pagina_streams):
+    try:
+        risposta = _richiesta_youtube(url_pagina_streams)
+        risposta.raise_for_status()
+        return risposta.text
+    except Exception:
+        return None
+
+
+def _corrispondenza_successiva(pattern, testo, posizione, raggio=500):
+    """Cerca 'pattern' solo in avanti rispetto a 'posizione' (mai indietro),
+    entro 'raggio' caratteri, e restituisce il primo gruppo trovato.
+    L'ID video e' quasi sempre il primo campo di un blocco nella pagina di
+    YouTube, con titolo e stato subito dopo: cercare solo in avanti evita
+    di associare per errore titolo/stato del blocco precedente quando le
+    voci sono ravvicinate nel testo della pagina."""
+    finestra = testo[posizione: posizione + raggio]
+    m = re.search(pattern, finestra)
+    return m.group(1) if m else None
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _video_live_multipli(url_pagina_streams, escludi_parole=None, limite=4):
+    """Trova piu' video attualmente in diretta contemporaneamente, dalla
+    pagina "/streams" di un canale (utile per canali che trasmettono piu'
+    dirette insieme, come NASA o NASASpaceflight).
+
+    Approccio euristico sulla struttura della pagina pubblica di YouTube:
+    se in futuro YouTube cambia formato potrebbe smettere di funzionare
+    e andare aggiustato.
+    """
+    testo = _scarica_pagina_streams(url_pagina_streams)
+    if not testo:
+        return []
+
+    risultati, visti = [], set()
+    for m in re.finditer(r'"videoId":"([a-zA-Z0-9_-]{11})"', testo):
+        video_id = m.group(1)
+        if video_id in visti:
+            continue
+
+        stile = _corrispondenza_successiva(r'"style":"(LIVE|UPCOMING)"', testo, m.end())
+        if stile != "LIVE":
+            continue
+
+        titolo = _corrispondenza_successiva(
+            r'"title":\{"runs":\[\{"text":"([^"]{1,150})"', testo, m.end()
+        ) or "Diretta senza titolo"
+
+        if escludi_parole and any(p.lower() in titolo.lower() for p in escludi_parole):
+            continue
+        visti.add(video_id)
+        risultati.append({"video_id": video_id, "titolo": titolo})
+        if len(risultati) >= limite:
+            break
+    return risultati
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _video_programmati(url_pagina_streams, limite=5):
+    """Dirette programmate (non ancora iniziate) elencate nella pagina
+    "/streams" di un canale."""
+    testo = _scarica_pagina_streams(url_pagina_streams)
+    if not testo:
+        return []
+
+    risultati, visti = [], set()
+    for m in re.finditer(r'"videoId":"([a-zA-Z0-9_-]{11})"', testo):
+        video_id = m.group(1)
+        if video_id in visti:
+            continue
+
+        stile = _corrispondenza_successiva(r'"style":"(LIVE|UPCOMING)"', testo, m.end())
+        if stile != "UPCOMING":
+            continue
+
+        titolo = _corrispondenza_successiva(
+            r'"title":\{"runs":\[\{"text":"([^"]{1,150})"', testo, m.end()
+        ) or "Diretta programmata"
+
+        visti.add(video_id)
+        risultati.append({"video_id": video_id, "titolo": titolo})
+        if len(risultati) >= limite:
+            break
+    return risultati
+
+
+def _diagnostica_richiesta(url):
+    """Esegue la stessa richiesta usata per cercare i video live, ma
+    restituendo informazioni grezze utili a capire un eventuale blocco
+    (pagina di consenso cookie, blocco anti-bot, redirect, errore HTTP),
+    invece del solo risultato finale gia elaborato."""
+    try:
+        risposta = _richiesta_youtube(url)
+        return {
+            "codice_stato": risposta.status_code,
+            "url_finale": risposta.url,
+            "lunghezza_pagina": len(risposta.text),
+            "contiene_videoId": '"videoId"' in risposta.text,
+            "anteprima": risposta.text[:300],
+        }
+    except Exception as e:
+        return {"errore": str(e)}
+
+
+def pagina_live():
+    if st.button("← Torna all'archivio"):
+        vai_a("dashboard")
+
+    st.title("🔴 Live")
+    st.caption(
+        "Dirette ufficiali o 24/7 conosciute, mostrate direttamente qui. Alcune sono "
+        "attive solo quando c'e' un evento in corso: se un canale non e' in diretta "
+        "in questo momento, te lo segnalo."
+    )
+
+    if e_admin():
+        with st.expander("🔧 Diagnostica (solo admin) — perche' un canale risulta offline"):
+            st.caption(
+                "Mostra cosa risponde davvero il server quando contatta YouTube: utile "
+                "per capire se il canale e' davvero offline o se c'e' un blocco/redirect."
+            )
+            if st.button("Esegui diagnostica ora"):
+                for canale in CANALI_LIVE:
+                    st.write(f"**{canale['titolo']}**")
+                    info = _diagnostica_richiesta(canale["url_live"])
+                    st.json(info)
+
+    st.divider()
+
+    for canale in CANALI_LIVE:
+        with st.container(border=True):
+            st.subheader(canale["titolo"])
+            st.caption(canale["descrizione"])
+            id_video = _video_live_attuale(canale["url_live"])
+            if id_video:
+                st.video(f"https://www.youtube.com/watch?v={id_video}")
+            else:
+                st.info("Questo canale non risulta in diretta in questo momento.")
+                st.link_button("Apri il canale su YouTube", canale["url_live"])
+
+    st.divider()
+    st.subheader("📡 Altre dirette NASA in corso")
+    st.caption("Dirette NASA diverse dalla webcam ISS qui sopra (es. lanci, eventi, conferenze).")
+    altre_nasa = _video_live_multipli(
+        "https://www.youtube.com/@NASA/streams",
+        escludi_parole=["Space Station", "ISS", "Stazione Spaziale"],
+    )
+    if not altre_nasa:
+        st.caption("Nessun'altra diretta NASA in corso al momento.")
+    else:
+        for v in altre_nasa:
+            with st.container(border=True):
+                st.write(f"**{v['titolo']}**")
+                st.video(f"https://www.youtube.com/watch?v={v['video_id']}")
+
+    st.divider()
+    st.subheader("📡 NASASpaceflight — Starbase, Space Coast e altre dirette")
+    altre_nsf = _video_live_multipli("https://www.youtube.com/@NASASpaceflight/streams")
+    if not altre_nsf:
+        st.caption("Nessuna diretta NASASpaceflight in corso al momento.")
+    else:
+        for v in altre_nsf:
+            with st.container(border=True):
+                st.write(f"**{v['titolo']}**")
+                st.video(f"https://www.youtube.com/watch?v={v['video_id']}")
+
+    programmate = _video_programmati("https://www.youtube.com/@NASASpaceflight/streams")
+    if programmate:
+        st.write("**🗓️ Prossime dirette programmate (NASASpaceflight):**")
+        for v in programmate:
+            st.write(f"· [{v['titolo']}](https://www.youtube.com/watch?v={v['video_id']})")
+
+
+# ---------------------------------------------------------------------------
+# Pagina: quiz spaziali e badge
+# ---------------------------------------------------------------------------
+
+def _badge_da_assegnare(punti_totali):
+    """Elenco dei badge che spettano a un utente in base ai punti totali."""
+    return [nome for soglia, nome in SOGLIE_BADGE if punti_totali >= soglia]
+
+
+def pagina_quiz():
+    if st.button("← Torna all'archivio"):
+        vai_a("dashboard")
+
+    st.title("🎯 Quiz spaziali")
+
+    utente_id = st.session_state.utente["id"]
+    punti_totali = db.punti_totali_utente(utente_id)
+    badge_posseduti = {b["badge"] for b in db.badge_utente(utente_id)}
+
+    col_punti, col_badge = st.columns([1, 3])
+    col_punti.metric("Punti totali", punti_totali)
+    with col_badge:
+        st.write("**🏅 I tuoi badge:**")
+        if badge_posseduti:
+            st.write(" · ".join(sorted(badge_posseduti,
+                                        key=lambda b: [s for s, n in SOGLIE_BADGE if n == b])))
+        else:
+            st.caption("Nessun badge ancora — rispondi a un quiz per iniziare a guadagnarli.")
+
+    with st.expander("Come funzionano i badge"):
+        for soglia, nome in SOGLIE_BADGE:
+            st.write(f"{nome} — da {soglia} punti totali in su")
+
+    st.divider()
+
+    argomento = st.selectbox("Scegli un argomento", list(DOMANDE.keys()), key="quiz_argomento")
+    domande = DOMANDE[argomento]
+
+    with st.form(f"form_quiz_{argomento}"):
+        risposte_scelte = []
+        for i, (domanda, opzioni, _) in enumerate(domande):
+            scelta = st.radio(f"{i + 1}. {domanda}", opzioni, key=f"quiz_{argomento}_{i}", index=None)
+            risposte_scelte.append(scelta)
+        invia_quiz = st.form_submit_button("Correggi il quiz", type="primary", use_container_width=True)
+
+    if invia_quiz:
+        if any(r is None for r in risposte_scelte):
+            st.error("Rispondi a tutte le domande prima di correggere il quiz.")
+        else:
+            punteggio = sum(
+                1 for (domanda, opzioni, indice_corretto), scelta in zip(domande, risposte_scelte)
+                if opzioni.index(scelta) == indice_corretto
+            )
+            db.salva_risultato_quiz(utente_id, argomento, punteggio, len(domande))
+
+            nuovo_totale = db.punti_totali_utente(utente_id)
+            badge_da_avere = _badge_da_assegnare(nuovo_totale)
+            nuovi_badge = [b for b in badge_da_avere if b not in badge_posseduti]
+            for b in nuovi_badge:
+                db.assegna_badge(utente_id, b)
+
+            st.success(f"Hai risposto correttamente a {punteggio} domande su {len(domande)}.")
+            if nuovi_badge:
+                st.balloons()
+                st.success("Nuovo badge sbloccato: " + ", ".join(nuovi_badge))
 
 
 # ---------------------------------------------------------------------------
@@ -1484,5 +1992,15 @@ else:
         pagina_impostazioni()
     elif view == "cielo":
         pagina_cielo()
+    elif view == "lanci":
+        pagina_lanci()
+    elif view == "news":
+        pagina_news()
+    elif view == "astronauti":
+        pagina_astronauti()
+    elif view == "quiz":
+        pagina_quiz()
+    elif view == "live":
+        pagina_live()
     else:
         pagina_dashboard()

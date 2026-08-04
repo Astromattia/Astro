@@ -84,6 +84,46 @@ def init_db():
         )
     """)
 
+    # --- Nuove tabelle: archivio astronauti, quiz, badge -------------------
+    # Aggiunte in coda, senza toccare nulla di esistente sopra: il database
+    # gia' presente su un deploy precedente si aggiorna da solo, senza
+    # perdere nulla (missioni, utenti, iscritti, impostazioni cielo/SMTP).
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS astronauti (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nome TEXT NOT NULL,
+            nazionalita TEXT,
+            agenzia TEXT,
+            missioni_effettuate TEXT,
+            ore_nello_spazio REAL DEFAULT 0,
+            biografia TEXT,
+            creato_da TEXT,
+            creato_il TEXT NOT NULL
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS quiz_risultati (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            utente_id INTEGER NOT NULL REFERENCES utenti(id) ON DELETE CASCADE,
+            argomento TEXT NOT NULL,
+            punteggio INTEGER NOT NULL,
+            totale_domande INTEGER NOT NULL,
+            creato_il TEXT NOT NULL
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS badge_assegnati (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            utente_id INTEGER NOT NULL REFERENCES utenti(id) ON DELETE CASCADE,
+            badge TEXT NOT NULL,
+            assegnato_il TEXT NOT NULL,
+            UNIQUE(utente_id, badge)
+        )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -103,6 +143,154 @@ def scrivi_impostazione(chiave, valore):
         "INSERT INTO impostazioni (chiave, valore) VALUES (?, ?) "
         "ON CONFLICT(chiave) DO UPDATE SET valore = excluded.valore",
         (chiave, valore),
+    )
+    conn.commit()
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Astronauti
+# ---------------------------------------------------------------------------
+
+def elenco_astronauti():
+    conn = get_connection()
+    righe = conn.execute("SELECT * FROM astronauti ORDER BY nome ASC").fetchall()
+    conn.close()
+    return righe
+
+
+# Astronauti famosi proposti per il caricamento rapido. Le ore nello spazio
+# sono cifre storiche approssimative (arrotondate dai giorni cumulativi
+# noti pubblicamente): l'amministratore puo' sempre correggerle a mano
+# dopo il caricamento, dalla scheda "Modifica" di ciascun astronauta.
+ASTRONAUTI_FAMOSI = [
+    ("Luca Parmitano", "Italiana", "ESA", "Expedition 36/37, Expedition 60/61 (comandante ISS)",
+     8800, "Primo italiano a comandare la Stazione Spaziale Internazionale (Expedition 61)."),
+    ("Samantha Cristoforetti", "Italiana", "ESA", "Expedition 42/43, Minerva (Expedition 68/69)",
+     8800, "Prima donna italiana nello spazio; detentrice per anni del record europeo di permanenza continua nello spazio."),
+    ("Paolo Nespoli", "Italiana", "ESA", "STS-120, Expedition 26/27, Expedition 52/53",
+     7500, "Tra gli astronauti italiani con piu tempo cumulativo nello spazio, su tre missioni diverse."),
+    ("Umberto Guidoni", "Italiana", "ESA", "STS-75, STS-100",
+     650, "Primo astronauta europeo a bordo della Stazione Spaziale Internazionale."),
+    ("Yuri Gagarin", "Sovietica", "URSS", "Vostok 1",
+     2, "Primo essere umano nello spazio e a orbitare la Terra, 12 aprile 1961."),
+    ("Valentina Tereshkova", "Sovietica", "URSS", "Vostok 6",
+     71, "Prima donna nello spazio, 1963."),
+    ("Neil Armstrong", "Statunitense", "NASA", "Gemini 8, Apollo 11",
+     200, "Primo essere umano a camminare sulla Luna, 20 luglio 1969."),
+    ("Buzz Aldrin", "Statunitense", "NASA", "Gemini 12, Apollo 11",
+     290, "Secondo uomo a camminare sulla Luna, insieme a Neil Armstrong nella missione Apollo 11."),
+    ("Sally Ride", "Statunitense", "NASA", "STS-7, STS-41-G",
+     343, "Prima donna statunitense nello spazio, 1983."),
+    ("Chris Hadfield", "Canadese", "CSA", "STS-74, STS-100, Expedition 34/35 (comandante ISS)",
+     4000, "Primo canadese a comandare la Stazione Spaziale Internazionale; noto anche per i video musicali dallo spazio."),
+    ("Scott Kelly", "Statunitense", "NASA", "STS-103, STS-118, Expedition 25/26, Expedition 43/44/45/46 (Anno nello Spazio)",
+     12400, "Ha trascorso quasi un anno consecutivo sulla ISS in un celebre studio di medicina spaziale sui gemelli."),
+    ("Peggy Whitson", "Statunitense", "NASA", "Expedition 5, Expedition 16, Expedition 50/51/52, Axiom Mission 2",
+     16000, "Detentrice del record statunitense di tempo cumulativo nello spazio tra gli astronauti."),
+]
+
+
+def popola_astronauti_famosi():
+    """Carica gli astronauti famosi proposti, saltando quelli gia presenti
+    (confronto per nome esatto), cosi' si puo' premere piu volte senza
+    creare doppioni. Restituisce quanti ne ha effettivamente aggiunti."""
+    esistenti = {a["nome"] for a in elenco_astronauti()}
+    aggiunti = 0
+    for nome, nazionalita, agenzia, missioni, ore, bio in ASTRONAUTI_FAMOSI:
+        if nome not in esistenti:
+            inserisci_astronauta(nome, nazionalita, agenzia, missioni, ore, bio, "sistema")
+            aggiunti += 1
+    return aggiunti
+
+
+def inserisci_astronauta(nome, nazionalita, agenzia, missioni_effettuate,
+                          ore_nello_spazio, biografia, creato_da):
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO astronauti (nome, nazionalita, agenzia, missioni_effettuate, "
+        "ore_nello_spazio, biografia, creato_da, creato_il) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (nome, nazionalita, agenzia, missioni_effettuate, ore_nello_spazio, biografia,
+         creato_da, datetime.utcnow().isoformat(timespec="seconds")),
+    )
+    conn.commit()
+    conn.close()
+
+
+def aggiorna_astronauta(id_astronauta, nome, nazionalita, agenzia, missioni_effettuate,
+                         ore_nello_spazio, biografia):
+    conn = get_connection()
+    conn.execute(
+        "UPDATE astronauti SET nome=?, nazionalita=?, agenzia=?, missioni_effettuate=?, "
+        "ore_nello_spazio=?, biografia=? WHERE id=?",
+        (nome, nazionalita, agenzia, missioni_effettuate, ore_nello_spazio, biografia,
+         id_astronauta),
+    )
+    conn.commit()
+    conn.close()
+
+
+def elimina_astronauta(id_astronauta):
+    conn = get_connection()
+    conn.execute("DELETE FROM astronauti WHERE id=?", (id_astronauta,))
+    conn.commit()
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Quiz e badge
+# ---------------------------------------------------------------------------
+
+def salva_risultato_quiz(utente_id, argomento, punteggio, totale_domande):
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO quiz_risultati (utente_id, argomento, punteggio, totale_domande, "
+        "creato_il) VALUES (?, ?, ?, ?, ?)",
+        (utente_id, argomento, punteggio, totale_domande,
+         datetime.utcnow().isoformat(timespec="seconds")),
+    )
+    conn.commit()
+    conn.close()
+
+
+def cronologia_quiz_utente(utente_id):
+    conn = get_connection()
+    righe = conn.execute(
+        "SELECT * FROM quiz_risultati WHERE utente_id=? ORDER BY creato_il DESC",
+        (utente_id,),
+    ).fetchall()
+    conn.close()
+    return righe
+
+
+def punti_totali_utente(utente_id):
+    """Somma di tutti i punti guadagnati nei quiz da un utente (usata per i badge)."""
+    conn = get_connection()
+    riga = conn.execute(
+        "SELECT COALESCE(SUM(punteggio), 0) AS totale FROM quiz_risultati WHERE utente_id=?",
+        (utente_id,),
+    ).fetchone()
+    conn.close()
+    return riga["totale"]
+
+
+def badge_utente(utente_id):
+    conn = get_connection()
+    righe = conn.execute(
+        "SELECT badge, assegnato_il FROM badge_assegnati WHERE utente_id=? ORDER BY assegnato_il ASC",
+        (utente_id,),
+    ).fetchall()
+    conn.close()
+    return righe
+
+
+def assegna_badge(utente_id, badge):
+    """Assegna un badge se l'utente non lo ha gia (UNIQUE evita i duplicati)."""
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO badge_assegnati (utente_id, badge, assegnato_il) VALUES (?, ?, ?) "
+        "ON CONFLICT(utente_id, badge) DO NOTHING",
+        (utente_id, badge, datetime.utcnow().isoformat(timespec="seconds")),
     )
     conn.commit()
     conn.close()
