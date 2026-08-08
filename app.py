@@ -18,6 +18,7 @@ import re
 import requests
 from urllib.parse import quote, urlencode, urlparse, parse_qs
 import streamlit as st
+import streamlit.components.v1 as components
 
 import database as db
 from auth import genera_hash_password, verifica_password
@@ -128,6 +129,8 @@ if "guida_in_modifica" not in st.session_state:
     st.session_state.guida_in_modifica = None
 if "conferma_elimina_guida" not in st.session_state:
     st.session_state.conferma_elimina_guida = None
+if "guida_aperta" not in st.session_state:
+    st.session_state.guida_aperta = None
 
 
 def vai_a(view, **kwargs):
@@ -1772,8 +1775,25 @@ def pagina_guide():
                 st.markdown(f"**{g['titolo']}**")
                 if g["descrizione"]:
                     st.caption(g["descrizione"])
+
                 if g["url"]:
-                    st.link_button("Apri la guida", g["url"])
+                    c1, c2 = st.columns(2)
+                    etichetta_mostra = (
+                        "🔽 Nascondi" if st.session_state.guida_aperta == g["id"] else "👁️ Mostra qui"
+                    )
+                    if c1.button(etichetta_mostra, key=f"mostra_guida_{g['id']}", use_container_width=True):
+                        st.session_state.guida_aperta = (
+                            None if st.session_state.guida_aperta == g["id"] else g["id"]
+                        )
+                        st.rerun()
+                    c2.link_button("Apri in una scheda nuova", g["url"], use_container_width=True)
+
+                if st.session_state.guida_aperta == g["id"] and g["url"]:
+                    st.caption(
+                        "Se il riquadro sotto resta vuoto, quel sito non permette di essere "
+                        "mostrato dentro un'altra pagina: usa 'Apri in una scheda nuova' qui sopra."
+                    )
+                    components.iframe(g["url"], height=600, scrolling=True)
 
                 if e_admin():
                     bc1, bc2 = st.columns(2)
