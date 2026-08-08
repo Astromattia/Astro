@@ -124,6 +124,18 @@ def init_db():
         )
     """)
 
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS guide (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            titolo TEXT NOT NULL,
+            descrizione TEXT,
+            url TEXT,
+            categoria TEXT,
+            creato_da TEXT,
+            creato_il TEXT NOT NULL
+        )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -292,6 +304,48 @@ def assegna_badge(utente_id, badge):
         "ON CONFLICT(utente_id, badge) DO NOTHING",
         (utente_id, badge, datetime.utcnow().isoformat(timespec="seconds")),
     )
+    conn.commit()
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Guide
+# ---------------------------------------------------------------------------
+
+def elenco_guide():
+    conn = get_connection()
+    righe = conn.execute(
+        "SELECT * FROM guide ORDER BY categoria ASC, titolo ASC"
+    ).fetchall()
+    conn.close()
+    return righe
+
+
+def inserisci_guida(titolo, descrizione, url, categoria, creato_da):
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO guide (titolo, descrizione, url, categoria, creato_da, creato_il) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (titolo, descrizione, url, categoria, creato_da,
+         datetime.utcnow().isoformat(timespec="seconds")),
+    )
+    conn.commit()
+    conn.close()
+
+
+def aggiorna_guida(id_guida, titolo, descrizione, url, categoria):
+    conn = get_connection()
+    conn.execute(
+        "UPDATE guide SET titolo=?, descrizione=?, url=?, categoria=? WHERE id=?",
+        (titolo, descrizione, url, categoria, id_guida),
+    )
+    conn.commit()
+    conn.close()
+
+
+def elimina_guida(id_guida):
+    conn = get_connection()
+    conn.execute("DELETE FROM guide WHERE id=?", (id_guida,))
     conn.commit()
     conn.close()
 

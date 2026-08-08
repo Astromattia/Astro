@@ -124,6 +124,10 @@ if "astronauta_in_modifica" not in st.session_state:
     st.session_state.astronauta_in_modifica = None
 if "conferma_elimina_astronauta" not in st.session_state:
     st.session_state.conferma_elimina_astronauta = None
+if "guida_in_modifica" not in st.session_state:
+    st.session_state.guida_in_modifica = None
+if "conferma_elimina_guida" not in st.session_state:
+    st.session_state.conferma_elimina_guida = None
 
 
 def vai_a(view, **kwargs):
@@ -492,6 +496,8 @@ def barra_laterale():
             vai_a("quiz")
         if st.button("🔴 Live", use_container_width=True):
             vai_a("live")
+        if st.button("📚 Guide", use_container_width=True):
+            vai_a("guide")
         if e_admin():
             if st.button("➕ Nuova missione", use_container_width=True):
                 vai_a("form_missione", missione_selezionata=None)
@@ -1719,6 +1725,106 @@ def pagina_live():
 
 
 # ---------------------------------------------------------------------------
+# Pagina: guide (raccolta di link utili, gestita dall'amministratore)
+# ---------------------------------------------------------------------------
+
+def pagina_guide():
+    if st.button("← Torna all'archivio"):
+        vai_a("dashboard")
+
+    st.title("📚 Guide")
+
+    if e_admin():
+        with st.expander("➕ Aggiungi guida"):
+            with st.form("form_nuova_guida", clear_on_submit=True):
+                titolo = st.text_input("Titolo")
+                categoria = st.text_input("Categoria (es. Osservatorio, Live, Missioni)")
+                url = st.text_input("Link (https://...)")
+                descrizione = st.text_area("Descrizione (facoltativa)", height=80)
+                crea = st.form_submit_button("Aggiungi", type="primary", use_container_width=True)
+
+            if crea:
+                if not titolo.strip() or not url.strip():
+                    st.error("Titolo e link sono obbligatori.")
+                else:
+                    db.inserisci_guida(
+                        titolo.strip(), descrizione.strip() or None, url.strip(),
+                        categoria.strip() or "Generale", st.session_state.utente["username"],
+                    )
+                    st.success(f"Guida '{titolo}' aggiunta.")
+                    st.rerun()
+
+    st.divider()
+
+    guide = db.elenco_guide()
+    if not guide:
+        st.info("Nessuna guida ancora presente.")
+        return
+
+    categorie = {}
+    for g in guide:
+        categorie.setdefault(g["categoria"] or "Generale", []).append(g)
+
+    for categoria, elenco in categorie.items():
+        st.subheader(categoria)
+        for g in elenco:
+            with st.container(border=True):
+                st.markdown(f"**{g['titolo']}**")
+                if g["descrizione"]:
+                    st.caption(g["descrizione"])
+                if g["url"]:
+                    st.link_button("Apri la guida", g["url"])
+
+                if e_admin():
+                    bc1, bc2 = st.columns(2)
+                    if bc1.button("Modifica", key=f"mod_guida_{g['id']}", use_container_width=True):
+                        st.session_state.guida_in_modifica = (
+                            None if st.session_state.guida_in_modifica == g["id"] else g["id"]
+                        )
+                        st.rerun()
+                    if bc2.button("Elimina", key=f"elim_guida_{g['id']}", use_container_width=True):
+                        st.session_state.conferma_elimina_guida = g["id"]
+                        st.rerun()
+
+                if st.session_state.conferma_elimina_guida == g["id"]:
+                    st.warning(f"Confermi l'eliminazione di **{g['titolo']}**?")
+                    cc1, cc2 = st.columns(2)
+                    if cc1.button("Si, elimina", key=f"conferma_elim_guida_{g['id']}", type="primary"):
+                        db.elimina_guida(g["id"])
+                        st.session_state.conferma_elimina_guida = None
+                        st.success("Guida eliminata.")
+                        st.rerun()
+                    if cc2.button("Annulla", key=f"annulla_elim_guida_{g['id']}"):
+                        st.session_state.conferma_elimina_guida = None
+                        st.rerun()
+
+                if e_admin() and st.session_state.guida_in_modifica == g["id"]:
+                    with st.form(f"form_modifica_guida_{g['id']}"):
+                        m_titolo = st.text_input("Titolo", value=g["titolo"])
+                        m_categoria = st.text_input("Categoria", value=g["categoria"] or "Generale")
+                        m_url = st.text_input("Link", value=g["url"] or "")
+                        m_descrizione = st.text_area("Descrizione", value=g["descrizione"] or "", height=80)
+                        salva, annulla = st.columns(2)
+                        salva_click = salva.form_submit_button("Salva", type="primary", use_container_width=True)
+                        annulla_click = annulla.form_submit_button("Annulla", use_container_width=True)
+
+                    if salva_click:
+                        if not m_titolo.strip() or not m_url.strip():
+                            st.error("Titolo e link sono obbligatori.")
+                        else:
+                            db.aggiorna_guida(
+                                g["id"], m_titolo.strip(), m_descrizione.strip() or None,
+                                m_url.strip(), m_categoria.strip() or "Generale",
+                            )
+                            st.session_state.guida_in_modifica = None
+                            st.success("Guida aggiornata.")
+                            st.rerun()
+                    if annulla_click:
+                        st.session_state.guida_in_modifica = None
+                        st.rerun()
+
+
+# ---------------------------------------------------------------------------
 # Pagina: quiz spaziali e badge
 # ---------------------------------------------------------------------------
 
@@ -2002,5 +2108,7 @@ else:
         pagina_quiz()
     elif view == "live":
         pagina_live()
+    elif view == "guide":
+        pagina_guide()
     else:
         pagina_dashboard()
