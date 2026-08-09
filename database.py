@@ -32,6 +32,7 @@ def init_db():
             ruolo TEXT NOT NULL DEFAULT 'utente' CHECK (ruolo IN ('admin', 'utente')),
             data_nascita TEXT,
             professione TEXT,
+            email TEXT,
             approvato INTEGER NOT NULL DEFAULT 1,
             creato_il TEXT NOT NULL
         )
@@ -44,6 +45,8 @@ def init_db():
         cur.execute("ALTER TABLE utenti ADD COLUMN data_nascita TEXT")
     if "professione" not in colonne_utenti:
         cur.execute("ALTER TABLE utenti ADD COLUMN professione TEXT")
+    if "email" not in colonne_utenti:
+        cur.execute("ALTER TABLE utenti ADD COLUMN email TEXT")
     if "approvato" not in colonne_utenti:
         # Gli utenti gia esistenti (creati prima di questa funzionalita)
         # sono considerati automaticamente approvati.

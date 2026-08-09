@@ -357,6 +357,10 @@ def pagina_autenticazione():
             r_username = st.text_input("Nome utente", key="reg_username")
             r_password = st.text_input("Password (minimo 6 caratteri)", type="password", key="reg_password")
             r_conferma = st.text_input("Conferma password", type="password", key="reg_conferma")
+            r_email = st.text_input(
+                "Email", key="reg_email",
+                help="Serve per avvisarti quando l'amministratore approva il tuo account.",
+            )
             r_nascita = st.date_input(
                 "Data di nascita", key="reg_nascita",
                 min_value=datetime(1900, 1, 1), max_value=datetime.utcnow(),
@@ -368,8 +372,12 @@ def pagina_autenticazione():
         if r_invia:
             r_username_p = r_username.strip()
             r_professione_p = r_professione.strip()
-            if not r_username_p or not r_password or not r_professione_p or r_nascita is None:
+            r_email_p = r_email.strip()
+            if (not r_username_p or not r_password or not r_professione_p
+                    or not r_email_p or r_nascita is None):
                 st.error("Tutti i campi sono obbligatori.")
+            elif "@" not in r_email_p or "." not in r_email_p.split("@")[-1]:
+                st.error("Inserisci un indirizzo email valido.")
             elif r_password != r_conferma:
                 st.error("Le due password non coincidono.")
             elif len(r_password) < 6:
@@ -385,9 +393,9 @@ def pagina_autenticazione():
                 else:
                     conn.execute(
                         "INSERT INTO utenti (username, password_hash, ruolo, data_nascita, "
-                        "professione, approvato, creato_il) VALUES (?, ?, 'utente', ?, ?, 0, ?)",
+                        "professione, email, approvato, creato_il) VALUES (?, ?, 'utente', ?, ?, ?, 0, ?)",
                         (r_username_p, genera_hash_password(r_password), r_nascita.isoformat(),
-                         r_professione_p, datetime.utcnow().isoformat(timespec="seconds")),
+                         r_professione_p, r_email_p, datetime.utcnow().isoformat(timespec="seconds")),
                     )
                     conn.commit()
                     conn.close()
@@ -403,6 +411,7 @@ def pagina_autenticazione():
                         f"Un nuovo utente si e' registrato all'Archivio Missioni Spaziali "
                         f"e attende la tua approvazione.\n\n"
                         f"Username: {r_username_p}\n"
+                        f"Email: {r_email_p}\n"
                         f"Data di nascita: {r_nascita.isoformat()}\n"
                         f"Professione: {r_professione_p}\n"
                         f"Registrato il: {datetime.utcnow().isoformat(timespec='seconds')} UTC\n\n"
@@ -834,6 +843,7 @@ def pagina_utenti():
                 min_value=datetime(1900, 1, 1), max_value=datetime.utcnow(),
             )
             nuova_professione = st.text_input("Professione (opzionale)")
+            nuova_email = st.text_input("Email (opzionale)")
             crea = st.form_submit_button("Crea utente", type="primary", use_container_width=True)
 
         if crea:
@@ -851,10 +861,10 @@ def pagina_utenti():
                 else:
                     conn.execute(
                         "INSERT INTO utenti (username, password_hash, ruolo, data_nascita, "
-                        "professione, creato_il) VALUES (?, ?, ?, ?, ?, ?)",
+                        "professione, email, creato_il) VALUES (?, ?, ?, ?, ?, ?, ?)",
                         (nuovo_username, genera_hash_password(nuova_password), nuovo_ruolo,
                          nuova_nascita.isoformat() if nuova_nascita else None,
-                         nuova_professione.strip() or None,
+                         nuova_professione.strip() or None, nuova_email.strip() or None,
                          datetime.utcnow().isoformat(timespec="seconds")),
                     )
                     conn.commit()
@@ -879,7 +889,7 @@ def pagina_utenti():
             with st.container(border=True):
                 a1, a2, a3, a4 = st.columns([1.8, 2, 1, 1])
                 a1.markdown(f"**{u['username']}**")
-                info_extra = " · ".join(filter(None, [u["professione"], u["data_nascita"]]))
+                info_extra = " · ".join(filter(None, [u["professione"], u["email"], u["data_nascita"]]))
                 a2.caption(info_extra or "—")
                 if a3.button("✅ Approva", key=f"approva_{u['id']}", type="primary",
                               use_container_width=True):
@@ -887,6 +897,35 @@ def pagina_utenti():
                     conn.execute("UPDATE utenti SET approvato=1 WHERE id=?", (u["id"],))
                     conn.commit()
                     conn.close()
+
+                    # Avviso all'utente approvato via email, se ha lasciato un
+                    # indirizzo e l'SMTP e' configurato. Un eventuale problema
+                    # di invio non deve mai bloccare l'approvazione.
+                    smtp_pronto = bool(
+                        db.leggi_impostazione("smtp_host") and db.leggi_impostazione("smtp_utente")
+                        and db.leggi_impostazione("smtp_password") and db.leggi_impostazione("smtp_mittente")
+                    )
+                    if u["email"] and smtp_pronto:
+                        try:
+                            invia_a_iscritti(
+                                host=db.leggi_impostazione("smtp_host"),
+                                porta=int(db.leggi_impostazione("smtp_porta", "587")),
+                                utente_smtp=db.leggi_impostazione("smtp_utente"),
+                                password_smtp=db.leggi_impostazione("smtp_password"),
+                                mittente=db.leggi_impostazione("smtp_mittente"),
+                                ssl_diretto=db.leggi_impostazione("smtp_ssl_diretto", "0") == "1",
+                                destinatari=[u["email"]],
+                                oggetto="Il tuo account e' stato approvato",
+                                corpo=(
+                                    f"Ciao {u['username']},\n\n"
+                                    f"Il tuo account sull'Archivio Missioni Spaziali e' stato "
+                                    f"approvato: ora puoi accedere con le credenziali scelte "
+                                    f"in fase di registrazione.\n"
+                                ),
+                            )
+                        except Exception:
+                            pass
+
                     st.success(f"'{u['username']}' approvato: ora puo' accedere.")
                     st.rerun()
                 if a4.button("❌ Rifiuta", key=f"rifiuta_{u['id']}", use_container_width=True):
@@ -951,6 +990,7 @@ def pagina_utenti():
                         min_value=datetime(1900, 1, 1), max_value=datetime.utcnow(),
                     )
                     m_professione = st.text_input("Professione", value=u["professione"] or "")
+                    m_email = st.text_input("Email", value=u["email"] or "")
                     m_nuova_password = st.text_input(
                         "Nuova password (lascia vuoto per non cambiarla)", type="password"
                     )
@@ -983,17 +1023,17 @@ def pagina_utenti():
                             if m_nuova_password:
                                 conn.execute(
                                     "UPDATE utenti SET username=?, data_nascita=?, professione=?, "
-                                    "password_hash=? WHERE id=?",
+                                    "email=?, password_hash=? WHERE id=?",
                                     (m_username_p, m_nascita.isoformat() if m_nascita else None,
-                                     m_professione.strip() or None,
+                                     m_professione.strip() or None, m_email.strip() or None,
                                      genera_hash_password(m_nuova_password), u["id"]),
                                 )
                             else:
                                 conn.execute(
-                                    "UPDATE utenti SET username=?, data_nascita=?, professione=? "
-                                    "WHERE id=?",
+                                    "UPDATE utenti SET username=?, data_nascita=?, professione=?, "
+                                    "email=? WHERE id=?",
                                     (m_username_p, m_nascita.isoformat() if m_nascita else None,
-                                     m_professione.strip() or None, u["id"]),
+                                     m_professione.strip() or None, m_email.strip() or None, u["id"]),
                                 )
                             conn.commit()
                             conn.close()
