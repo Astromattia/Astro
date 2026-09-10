@@ -319,7 +319,10 @@ def pagina_autenticazione():
     # Da qui in poi esiste gia almeno un utente: solo login, niente
     # registrazione pubblica. I nuovi utenti li crea l'amministratore
     # dalla pagina "Gestione utenti".
-    st.caption("Accedi per consultare l'archivio delle missioni.")
+    if st.button("← Torna al sito senza accedere"):
+        vai_a("dashboard")
+
+    st.caption("Accedi come amministratore per aggiungere o modificare contenuti.")
     with st.form("form_login"):
         username = st.text_input("Username")
         password = st.text_input("Password", type="password")
@@ -511,7 +514,10 @@ def barra_laterale():
     utente = st.session_state.utente
     with st.sidebar:
         st.markdown('<p class="brand-title">🚀 Missioni</p>', unsafe_allow_html=True)
-        st.caption(f"{utente['username']} · {utente['ruolo']}")
+        if utente:
+            st.caption(f"{utente['username']} · {utente['ruolo']}")
+        else:
+            st.caption("Visitatore (non hai effettuato l'accesso)")
         st.divider()
 
         if st.button("📋 Elenco missioni", use_container_width=True):
@@ -547,9 +553,13 @@ def barra_laterale():
         _sezione_voli_esterni()
 
         st.divider()
-        if st.button("Esci", use_container_width=True):
-            st.session_state.utente = None
-            vai_a("dashboard")
+        if utente:
+            if st.button("Esci", use_container_width=True):
+                st.session_state.utente = None
+                vai_a("dashboard")
+        else:
+            if st.button("🔐 Accedi", type="primary", use_container_width=True):
+                vai_a("login")
 
 
 def _riga_volo_esterno(v, chiave):
@@ -2112,6 +2122,12 @@ def pagina_quiz():
 
     st.title("🎯 Quiz spaziali")
 
+    if st.session_state.utente is None:
+        st.info("Accedi con un account per rispondere ai quiz e guadagnare punti e badge.")
+        if st.button("🔐 Accedi", type="primary"):
+            vai_a("login")
+        return
+
     utente_id = st.session_state.utente["id"]
     punti_totali = db.punti_totali_utente(utente_id)
     badge_posseduti = {b["badge"] for b in db.badge_utente(utente_id)}
@@ -2352,7 +2368,17 @@ def pagina_newsletter():
 # Instradamento principale
 # ---------------------------------------------------------------------------
 
-if st.session_state.utente is None:
+conn = db.get_connection()
+_numero_utenti_totale = conn.execute("SELECT COUNT(*) AS c FROM utenti").fetchone()["c"]
+conn.close()
+
+if _numero_utenti_totale == 0:
+    # Nessun account esiste ancora: va creato per forza il primo
+    # amministratore prima di qualsiasi altra cosa, pubblica o no.
+    pagina_autenticazione()
+elif st.session_state.utente is None and st.session_state.view == "login":
+    # Un visitatore ha scelto di accedere: mostra il modulo di login,
+    # con la possibilita di tornare a navigare senza farlo.
     pagina_autenticazione()
 else:
     barra_laterale()
