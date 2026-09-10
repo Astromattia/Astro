@@ -1,7 +1,8 @@
 """
-Notizie spaziali recenti, recuperate dai feed RSS ufficiali di NASA ed ESA.
+Notizie spaziali recenti, recuperate dai feed RSS ufficiali di NASA, ESA
+e ASI (Agenzia Spaziale Italiana).
 
-Sono entrambe fonti pubbliche e gratuite, senza bisogno di alcuna chiave
+Sono tutte fonti pubbliche e gratuite, senza bisogno di alcuna chiave
 API. Il parsing usa la libreria "feedparser", che gestisce da sola le
 tante piccole differenze tra i vari formati RSS/Atom in circolazione.
 """
@@ -13,6 +14,7 @@ TIMEOUT = 12
 FONTI = {
     "NASA": "https://www.nasa.gov/feed/",
     "ESA": "https://www.esa.int/rssfeed/Our_Activities/Space_News",
+    "ASI": "https://www.asi.it/en/news/feed",
 }
 
 

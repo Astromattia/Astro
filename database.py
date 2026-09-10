@@ -139,6 +139,18 @@ def init_db():
         )
     """)
 
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS eventi_calendario (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            titolo TEXT NOT NULL,
+            descrizione TEXT,
+            data_evento TEXT NOT NULL,
+            url TEXT,
+            creato_da TEXT,
+            creato_il TEXT NOT NULL
+        )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -349,6 +361,48 @@ def aggiorna_guida(id_guida, titolo, descrizione, url, categoria):
 def elimina_guida(id_guida):
     conn = get_connection()
     conn.execute("DELETE FROM guide WHERE id=?", (id_guida,))
+    conn.commit()
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Eventi calendario (organizzati manualmente dall'amministratore)
+# ---------------------------------------------------------------------------
+
+def elenco_eventi_calendario():
+    conn = get_connection()
+    righe = conn.execute(
+        "SELECT * FROM eventi_calendario ORDER BY data_evento ASC"
+    ).fetchall()
+    conn.close()
+    return righe
+
+
+def inserisci_evento_calendario(titolo, descrizione, data_evento, url, creato_da):
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO eventi_calendario (titolo, descrizione, data_evento, url, "
+        "creato_da, creato_il) VALUES (?, ?, ?, ?, ?, ?)",
+        (titolo, descrizione, data_evento, url, creato_da,
+         datetime.utcnow().isoformat(timespec="seconds")),
+    )
+    conn.commit()
+    conn.close()
+
+
+def aggiorna_evento_calendario(id_evento, titolo, descrizione, data_evento, url):
+    conn = get_connection()
+    conn.execute(
+        "UPDATE eventi_calendario SET titolo=?, descrizione=?, data_evento=?, url=? WHERE id=?",
+        (titolo, descrizione, data_evento, url, id_evento),
+    )
+    conn.commit()
+    conn.close()
+
+
+def elimina_evento_calendario(id_evento):
+    conn = get_connection()
+    conn.execute("DELETE FROM eventi_calendario WHERE id=?", (id_evento,))
     conn.commit()
     conn.close()
 

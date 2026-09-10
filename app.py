@@ -30,6 +30,7 @@ from cielo_notturno import (
 )
 from notizie_spaziali import recupera_tutte_le_notizie
 from quiz_dati import DOMANDE, SOGLIE_BADGE
+from eventi_astronomici import equinozi_solstizi, prossime_piogge_meteore, prossime_eclissi
 
 # ---------------------------------------------------------------------------
 # Configurazione pagina
@@ -131,6 +132,10 @@ if "conferma_elimina_guida" not in st.session_state:
     st.session_state.conferma_elimina_guida = None
 if "guida_aperta" not in st.session_state:
     st.session_state.guida_aperta = None
+if "evento_in_modifica" not in st.session_state:
+    st.session_state.evento_in_modifica = None
+if "conferma_elimina_evento" not in st.session_state:
+    st.session_state.conferma_elimina_evento = None
 
 
 def vai_a(view, **kwargs):
@@ -218,6 +223,21 @@ def _cache_prossimi_lanci_estesi():
 @st.cache_data(ttl=1800, show_spinner=False)
 def _cache_notizie_spaziali():
     return recupera_tutte_le_notizie()
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def _cache_equinozi_solstizi(anno):
+    return equinozi_solstizi(anno)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def _cache_prossime_piogge_meteore():
+    return prossime_piogge_meteore()
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def _cache_prossime_eclissi():
+    return prossime_eclissi()
 
 
 # ---------------------------------------------------------------------------
@@ -510,6 +530,8 @@ def barra_laterale():
             vai_a("live")
         if st.button("📚 Guide", use_container_width=True):
             vai_a("guide")
+        if st.button("📅 Eventi", use_container_width=True):
+            vai_a("eventi")
         if e_admin():
             if st.button("➕ Nuova missione", use_container_width=True):
                 vai_a("form_missione", missione_selezionata=None)
@@ -1082,6 +1104,28 @@ def pagina_impostazioni():
     if st.button("← Torna all'archivio"):
         vai_a("dashboard")
 
+    st.title("💾 Backup del database")
+    st.caption(
+        "Scarica una copia completa del database (missioni, utenti, astronauti, guide, "
+        "quiz, impostazioni) prima di operazioni delicate come un riavvio dell'app: "
+        "il file non e' mai salvato su GitHub, quindi questa e' l'unica copia di sicurezza."
+    )
+    try:
+        with open(db.DB_PATH, "rb") as f:
+            dati_backup = f.read()
+        st.download_button(
+            "📥 Scarica backup ora (missioni.db)",
+            data=dati_backup,
+            file_name=f"backup_missioni_{datetime.utcnow().strftime('%Y%m%d_%H%M')}.db",
+            mime="application/octet-stream",
+            type="primary",
+            use_container_width=True,
+        )
+    except Exception:
+        st.warning("Non riesco a leggere il file del database in questo momento.")
+
+    st.divider()
+
     st.title("Sfondo pagina di accesso")
     st.caption("Carica un'immagine da mostrare come sfondo nella schermata di login.")
 
@@ -1365,7 +1409,7 @@ def pagina_news():
         vai_a("dashboard")
 
     st.title("📰 News spaziali")
-    st.caption("Ultime notizie dai feed ufficiali di NASA ed ESA, aggiornate ogni 30 minuti.")
+    st.caption("Ultime notizie dai feed ufficiali di NASA, ESA e ASI, aggiornate ogni 30 minuti.")
     st.divider()
 
     try:
@@ -1375,8 +1419,12 @@ def pagina_news():
         st.warning("Non riesco a recuperare le notizie in questo momento. Riprova piu tardi.")
         return
 
-    col_nasa, col_esa = st.columns(2)
-    intestazioni = {"NASA": ("🇺🇸 NASA", col_nasa), "ESA": ("🇪🇺 ESA", col_esa)}
+    col_nasa, col_esa, col_asi = st.columns(3)
+    intestazioni = {
+        "NASA": ("🇺🇸 NASA", col_nasa),
+        "ESA": ("🇪🇺 ESA", col_esa),
+        "ASI": ("🇮🇹 ASI", col_asi),
+    }
 
     for fonte, (etichetta, colonna) in intestazioni.items():
         with colonna:
@@ -1885,6 +1933,171 @@ def pagina_guide():
 
 
 # ---------------------------------------------------------------------------
+# Pagina: eventi (astronomici, organizzati, e novita dalle agenzie spaziali)
+# ---------------------------------------------------------------------------
+
+def pagina_eventi():
+    if st.button("← Torna all'archivio"):
+        vai_a("dashboard")
+
+    st.title("📅 Eventi")
+
+    tab_astro, tab_organizzati, tab_agenzie = st.tabs(
+        ["🌌 Eventi astronomici", "🗓️ Eventi organizzati", "🏛️ Novita dalle agenzie"]
+    )
+
+    # --- Eventi astronomici -------------------------------------------
+    with tab_astro:
+        st.caption(
+            "Equinozi e solstizi calcolati con precisione astronomica; piogge di "
+            "meteore ed eclissi con date note, valide per l'anno in corso."
+        )
+        anno_corrente = datetime.utcnow().year
+
+        try:
+            with st.spinner("Calcolo equinozi e solstizi..."):
+                stagioni = _cache_equinozi_solstizi(anno_corrente)
+            st.subheader("☀️ Equinozi e solstizi")
+            for s in stagioni:
+                st.write(f"**{s['titolo']}** — {s['data'].strftime('%d/%m/%Y %H:%M')} UTC")
+        except Exception:
+            st.warning("Calcolo di equinozi e solstizi non disponibile al momento.")
+
+        st.divider()
+        st.subheader("☄️ Prossime piogge di meteore")
+        try:
+            for p in _cache_prossime_piogge_meteore()[:5]:
+                st.write(f"**{p['titolo']}** — {p['data'].strftime('%d/%m/%Y')}")
+        except Exception:
+            st.warning("Elenco piogge di meteore non disponibile al momento.")
+
+        st.divider()
+        st.subheader(f"🌘 Eclissi {anno_corrente}")
+        try:
+            eclissi = _cache_prossime_eclissi()
+            if not eclissi:
+                st.write("Nessuna eclissi ancora da venire quest'anno.")
+            else:
+                for e in eclissi:
+                    with st.container(border=True):
+                        st.write(f"**{e['titolo']}** — {e['data'].strftime('%d/%m/%Y')}")
+                        st.caption(e["descrizione"])
+        except Exception:
+            st.warning("Elenco eclissi non disponibile al momento.")
+
+    # --- Eventi organizzati (gestiti dall'amministratore) ---------------
+    with tab_organizzati:
+        if e_admin():
+            with st.expander("➕ Aggiungi evento"):
+                with st.form("form_nuovo_evento", clear_on_submit=True):
+                    ev_titolo = st.text_input("Titolo")
+                    ev_data = st.date_input("Data dell'evento", value=None)
+                    ev_url = st.text_input("Link (facoltativo)")
+                    ev_descrizione = st.text_area("Descrizione (facoltativa)", height=80)
+                    ev_crea = st.form_submit_button("Aggiungi", type="primary", use_container_width=True)
+
+                if ev_crea:
+                    if not ev_titolo.strip() or ev_data is None:
+                        st.error("Titolo e data sono obbligatori.")
+                    else:
+                        db.inserisci_evento_calendario(
+                            ev_titolo.strip(), ev_descrizione.strip() or None,
+                            ev_data.isoformat(), ev_url.strip() or None,
+                            st.session_state.utente["username"],
+                        )
+                        st.success(f"Evento '{ev_titolo}' aggiunto.")
+                        st.rerun()
+
+        st.divider()
+        eventi = db.elenco_eventi_calendario()
+        if not eventi:
+            st.info("Nessun evento organizzato ancora presente.")
+        else:
+            for ev in eventi:
+                with st.container(border=True):
+                    st.markdown(f"**{ev['titolo']}**")
+                    st.caption(ev["data_evento"])
+                    if ev["descrizione"]:
+                        st.write(ev["descrizione"])
+                    if ev["url"]:
+                        st.link_button("Apri il link", ev["url"])
+
+                    if e_admin():
+                        bc1, bc2 = st.columns(2)
+                        if bc1.button("Modifica", key=f"mod_evento_{ev['id']}", use_container_width=True):
+                            st.session_state.evento_in_modifica = (
+                                None if st.session_state.evento_in_modifica == ev["id"] else ev["id"]
+                            )
+                            st.rerun()
+                        if bc2.button("Elimina", key=f"elim_evento_{ev['id']}", use_container_width=True):
+                            st.session_state.conferma_elimina_evento = ev["id"]
+                            st.rerun()
+
+                    if st.session_state.conferma_elimina_evento == ev["id"]:
+                        st.warning(f"Confermi l'eliminazione di **{ev['titolo']}**?")
+                        cc1, cc2 = st.columns(2)
+                        if cc1.button("Si, elimina", key=f"conferma_elim_evento_{ev['id']}", type="primary"):
+                            db.elimina_evento_calendario(ev["id"])
+                            st.session_state.conferma_elimina_evento = None
+                            st.success("Evento eliminato.")
+                            st.rerun()
+                        if cc2.button("Annulla", key=f"annulla_elim_evento_{ev['id']}"):
+                            st.session_state.conferma_elimina_evento = None
+                            st.rerun()
+
+                    if e_admin() and st.session_state.evento_in_modifica == ev["id"]:
+                        with st.form(f"form_modifica_evento_{ev['id']}"):
+                            m_titolo = st.text_input("Titolo", value=ev["titolo"])
+                            try:
+                                valore_data = datetime.strptime(ev["data_evento"], "%Y-%m-%d")
+                            except ValueError:
+                                valore_data = None
+                            m_data = st.date_input("Data", value=valore_data)
+                            m_url = st.text_input("Link", value=ev["url"] or "")
+                            m_descrizione = st.text_area("Descrizione", value=ev["descrizione"] or "", height=80)
+                            salva, annulla = st.columns(2)
+                            salva_click = salva.form_submit_button("Salva", type="primary", use_container_width=True)
+                            annulla_click = annulla.form_submit_button("Annulla", use_container_width=True)
+
+                        if salva_click:
+                            if not m_titolo.strip() or m_data is None:
+                                st.error("Titolo e data sono obbligatori.")
+                            else:
+                                db.aggiorna_evento_calendario(
+                                    ev["id"], m_titolo.strip(), m_descrizione.strip() or None,
+                                    m_data.isoformat(), m_url.strip() or None,
+                                )
+                                st.session_state.evento_in_modifica = None
+                                st.success("Evento aggiornato.")
+                                st.rerun()
+                        if annulla_click:
+                            st.session_state.evento_in_modifica = None
+                            st.rerun()
+
+    # --- Novita dalle agenzie spaziali ----------------------------------
+    with tab_agenzie:
+        st.caption(
+            "Ultime notizie ufficiali da NASA, ESA e ASI (stesso feed della pagina "
+            "'News spaziali'). Per Thales Alenia Space non e' disponibile un feed "
+            "pubblico affidabile: puoi aggiungere link utili manualmente nella "
+            "pagina 'Guide'."
+        )
+        try:
+            with st.spinner("Carico le novita..."):
+                notizie_per_fonte = _cache_notizie_spaziali()
+            for fonte, etichetta in [("NASA", "🇺🇸 NASA"), ("ESA", "🇪🇺 ESA"), ("ASI", "🇮🇹 ASI")]:
+                st.subheader(etichetta)
+                notizie = notizie_per_fonte.get(fonte, [])[:5]
+                if not notizie:
+                    st.caption("Nessuna novita disponibile al momento.")
+                else:
+                    for n in notizie:
+                        st.write(f"· [{n['titolo']}]({n['link']})" + (f" — {n['data']}" if n["data"] else ""))
+        except Exception:
+            st.warning("Novita dalle agenzie non disponibili al momento.")
+
+
+# ---------------------------------------------------------------------------
 # Pagina: quiz spaziali e badge
 # ---------------------------------------------------------------------------
 
@@ -2170,5 +2383,7 @@ else:
         pagina_live()
     elif view == "guide":
         pagina_guide()
+    elif view == "eventi":
+        pagina_eventi()
     else:
         pagina_dashboard()
