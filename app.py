@@ -87,7 +87,7 @@ st.markdown("""
         color: #F2A65A;
     }
     [data-testid="stWidgetLabel"] p {
-        color: #FFFFFF !important;
+        color: var(--text-color) !important;
         font-weight: 500;
     }
 </style>
@@ -136,6 +136,14 @@ if "evento_in_modifica" not in st.session_state:
     st.session_state.evento_in_modifica = None
 if "conferma_elimina_evento" not in st.session_state:
     st.session_state.conferma_elimina_evento = None
+if "articolo_in_modifica" not in st.session_state:
+    st.session_state.articolo_in_modifica = None
+if "conferma_elimina_articolo" not in st.session_state:
+    st.session_state.conferma_elimina_articolo = None
+if "prodotto_in_modifica" not in st.session_state:
+    st.session_state.prodotto_in_modifica = None
+if "conferma_elimina_prodotto" not in st.session_state:
+    st.session_state.conferma_elimina_prodotto = None
 
 
 def vai_a(view, **kwargs):
@@ -520,6 +528,10 @@ def barra_laterale():
             st.caption("Visitatore (non hai effettuato l'accesso)")
         st.divider()
 
+        if st.button("📝 Notizie", use_container_width=True):
+            vai_a("articoli")
+        if st.button("🛍️ Negozio", use_container_width=True):
+            vai_a("negozio")
         if st.button("📋 Elenco missioni", use_container_width=True):
             vai_a("dashboard")
         if st.button("🌌 Osservatorio Astronomico", use_container_width=True):
@@ -2181,6 +2193,246 @@ def pagina_quiz():
 
 
 # ---------------------------------------------------------------------------
+# Pagina: notizie scritte dall'amministratore (non da fonti esterne)
+# ---------------------------------------------------------------------------
+
+def pagina_articoli():
+    if st.button("← Torna all'archivio"):
+        vai_a("dashboard")
+
+    st.title("📝 Notizie")
+
+    if e_admin():
+        with st.expander("➕ Scrivi una notizia"):
+            with st.form("form_nuovo_articolo", clear_on_submit=True):
+                titolo = st.text_input("Titolo")
+                categoria = st.text_input("Categoria (a tua scelta, es. Curiosita, Approfondimenti)")
+                contenuto = st.text_area("Testo della notizia", height=200)
+                immagine = st.file_uploader("Immagine (facoltativa, JPG o PNG, max 5 MB)",
+                                             type=["png", "jpg", "jpeg"])
+                crea = st.form_submit_button("Pubblica", type="primary", use_container_width=True)
+
+            if crea:
+                if not titolo.strip() or not contenuto.strip():
+                    st.error("Titolo e testo sono obbligatori.")
+                else:
+                    immagine_b64, immagine_mime = None, None
+                    if immagine is not None:
+                        dati = immagine.getvalue()
+                        if len(dati) > 5 * 1024 * 1024:
+                            st.error("L'immagine supera i 5 MB. Scegline una piu leggera.")
+                            st.stop()
+                        immagine_b64 = base64.b64encode(dati).decode("ascii")
+                        immagine_mime = immagine.type or "image/png"
+                    db.inserisci_articolo(
+                        titolo.strip(), categoria.strip() or "Generale", contenuto.strip(),
+                        immagine_b64, immagine_mime, st.session_state.utente["username"],
+                    )
+                    st.success(f"Notizia '{titolo}' pubblicata.")
+                    st.rerun()
+
+    st.divider()
+
+    articoli = db.elenco_articoli()
+    if not articoli:
+        st.info("Nessuna notizia ancora pubblicata.")
+        return
+
+    categorie_disponibili = sorted({a["categoria"] or "Generale" for a in articoli})
+    filtro = st.selectbox("Filtra per categoria", ["Tutte"] + categorie_disponibili)
+    if filtro != "Tutte":
+        articoli = [a for a in articoli if (a["categoria"] or "Generale") == filtro]
+
+    for a in articoli:
+        with st.container(border=True):
+            st.markdown(f"### {a['titolo']}")
+            st.caption(f"{a['categoria'] or 'Generale'} · {a['creato_il'][:10]}"
+                       + (f" (aggiornato il {a['aggiornato_il'][:10]})" if a["aggiornato_il"] else ""))
+            if a["immagine_b64"]:
+                st.image(base64.b64decode(a["immagine_b64"]), use_container_width=True)
+            st.write(a["contenuto"])
+
+            if e_admin():
+                bc1, bc2 = st.columns(2)
+                if bc1.button("Modifica", key=f"mod_art_{a['id']}", use_container_width=True):
+                    st.session_state.articolo_in_modifica = (
+                        None if st.session_state.articolo_in_modifica == a["id"] else a["id"]
+                    )
+                    st.rerun()
+                if bc2.button("Elimina", key=f"elim_art_{a['id']}", use_container_width=True):
+                    st.session_state.conferma_elimina_articolo = a["id"]
+                    st.rerun()
+
+            if st.session_state.conferma_elimina_articolo == a["id"]:
+                st.warning(f"Confermi l'eliminazione di **{a['titolo']}**?")
+                cc1, cc2 = st.columns(2)
+                if cc1.button("Si, elimina", key=f"conferma_elim_art_{a['id']}", type="primary"):
+                    db.elimina_articolo(a["id"])
+                    st.session_state.conferma_elimina_articolo = None
+                    st.success("Notizia eliminata.")
+                    st.rerun()
+                if cc2.button("Annulla", key=f"annulla_elim_art_{a['id']}"):
+                    st.session_state.conferma_elimina_articolo = None
+                    st.rerun()
+
+            if e_admin() and st.session_state.articolo_in_modifica == a["id"]:
+                with st.form(f"form_modifica_art_{a['id']}"):
+                    m_titolo = st.text_input("Titolo", value=a["titolo"])
+                    m_categoria = st.text_input("Categoria", value=a["categoria"] or "Generale")
+                    m_contenuto = st.text_area("Testo", value=a["contenuto"], height=200)
+                    m_immagine = st.file_uploader("Nuova immagine (lascia vuoto per non cambiarla)",
+                                                   type=["png", "jpg", "jpeg"], key=f"img_mod_{a['id']}")
+                    salva, annulla = st.columns(2)
+                    salva_click = salva.form_submit_button("Salva", type="primary", use_container_width=True)
+                    annulla_click = annulla.form_submit_button("Annulla", use_container_width=True)
+
+                if salva_click:
+                    if not m_titolo.strip() or not m_contenuto.strip():
+                        st.error("Titolo e testo sono obbligatori.")
+                    else:
+                        nuova_immagine_b64, nuova_immagine_mime = None, None
+                        if m_immagine is not None:
+                            dati = m_immagine.getvalue()
+                            if len(dati) > 5 * 1024 * 1024:
+                                st.error("L'immagine supera i 5 MB.")
+                                st.stop()
+                            nuova_immagine_b64 = base64.b64encode(dati).decode("ascii")
+                            nuova_immagine_mime = m_immagine.type or "image/png"
+                        db.aggiorna_articolo(
+                            a["id"], m_titolo.strip(), m_categoria.strip() or "Generale",
+                            m_contenuto.strip(), nuova_immagine_b64, nuova_immagine_mime,
+                        )
+                        st.session_state.articolo_in_modifica = None
+                        st.success("Notizia aggiornata.")
+                        st.rerun()
+                if annulla_click:
+                    st.session_state.articolo_in_modifica = None
+                    st.rerun()
+
+
+# ---------------------------------------------------------------------------
+# Pagina: negozio (catalogo — nessun pagamento reale collegato)
+# ---------------------------------------------------------------------------
+
+def pagina_negozio():
+    if st.button("← Torna all'archivio"):
+        vai_a("dashboard")
+
+    st.title("🛍️ Negozio")
+    st.caption(
+        "Vetrina degli oggetti in vendita. In questa fase i pagamenti veri non sono "
+        "ancora attivi: servira' un adulto per collegare un servizio di pagamento sicuro."
+    )
+
+    if e_admin():
+        with st.expander("➕ Aggiungi prodotto"):
+            with st.form("form_nuovo_prodotto", clear_on_submit=True):
+                nome = st.text_input("Nome del prodotto")
+                prezzo = st.number_input("Prezzo (€)", min_value=0.0, step=0.5)
+                descrizione = st.text_area("Descrizione", height=100)
+                immagine = st.file_uploader("Immagine (facoltativa, JPG o PNG, max 5 MB)",
+                                             type=["png", "jpg", "jpeg"])
+                crea = st.form_submit_button("Aggiungi al negozio", type="primary", use_container_width=True)
+
+            if crea:
+                if not nome.strip():
+                    st.error("Il nome del prodotto e' obbligatorio.")
+                else:
+                    immagine_b64, immagine_mime = None, None
+                    if immagine is not None:
+                        dati = immagine.getvalue()
+                        if len(dati) > 5 * 1024 * 1024:
+                            st.error("L'immagine supera i 5 MB. Scegline una piu leggera.")
+                            st.stop()
+                        immagine_b64 = base64.b64encode(dati).decode("ascii")
+                        immagine_mime = immagine.type or "image/png"
+                    db.inserisci_prodotto(
+                        nome.strip(), descrizione.strip() or None, prezzo,
+                        immagine_b64, immagine_mime, st.session_state.utente["username"],
+                    )
+                    st.success(f"'{nome}' aggiunto al negozio.")
+                    st.rerun()
+
+    st.divider()
+
+    prodotti = db.elenco_prodotti()
+    if not prodotti:
+        st.info("Nessun prodotto ancora presente nel negozio.")
+        return
+
+    colonne = st.columns(3)
+    for i, p in enumerate(prodotti):
+        with colonne[i % 3]:
+            with st.container(border=True):
+                if p["immagine_b64"]:
+                    st.image(base64.b64decode(p["immagine_b64"]), use_container_width=True)
+                st.markdown(f"**{p['nome']}**")
+                st.write(f"€ {p['prezzo']:.2f}")
+                if p["descrizione"]:
+                    st.caption(p["descrizione"])
+                if not p["disponibile"]:
+                    st.caption("⚠️ Non disponibile al momento")
+
+                if e_admin():
+                    bc1, bc2 = st.columns(2)
+                    if bc1.button("Modifica", key=f"mod_prod_{p['id']}", use_container_width=True):
+                        st.session_state.prodotto_in_modifica = (
+                            None if st.session_state.prodotto_in_modifica == p["id"] else p["id"]
+                        )
+                        st.rerun()
+                    if bc2.button("Elimina", key=f"elim_prod_{p['id']}", use_container_width=True):
+                        st.session_state.conferma_elimina_prodotto = p["id"]
+                        st.rerun()
+
+                if st.session_state.conferma_elimina_prodotto == p["id"]:
+                    st.warning(f"Confermi l'eliminazione di **{p['nome']}**?")
+                    cc1, cc2 = st.columns(2)
+                    if cc1.button("Si, elimina", key=f"conferma_elim_prod_{p['id']}", type="primary"):
+                        db.elimina_prodotto(p["id"])
+                        st.session_state.conferma_elimina_prodotto = None
+                        st.success("Prodotto eliminato.")
+                        st.rerun()
+                    if cc2.button("Annulla", key=f"annulla_elim_prod_{p['id']}"):
+                        st.session_state.conferma_elimina_prodotto = None
+                        st.rerun()
+
+                if e_admin() and st.session_state.prodotto_in_modifica == p["id"]:
+                    with st.form(f"form_modifica_prod_{p['id']}"):
+                        m_nome = st.text_input("Nome", value=p["nome"])
+                        m_prezzo = st.number_input("Prezzo (€)", min_value=0.0, step=0.5, value=float(p["prezzo"]))
+                        m_descrizione = st.text_area("Descrizione", value=p["descrizione"] or "", height=80)
+                        m_disponibile = st.checkbox("Disponibile", value=bool(p["disponibile"]))
+                        m_immagine = st.file_uploader("Nuova immagine (lascia vuoto per non cambiarla)",
+                                                       type=["png", "jpg", "jpeg"], key=f"img_mod_prod_{p['id']}")
+                        salva, annulla = st.columns(2)
+                        salva_click = salva.form_submit_button("Salva", type="primary", use_container_width=True)
+                        annulla_click = annulla.form_submit_button("Annulla", use_container_width=True)
+
+                    if salva_click:
+                        if not m_nome.strip():
+                            st.error("Il nome e' obbligatorio.")
+                        else:
+                            nuova_immagine_b64, nuova_immagine_mime = None, None
+                            if m_immagine is not None:
+                                dati = m_immagine.getvalue()
+                                if len(dati) > 5 * 1024 * 1024:
+                                    st.error("L'immagine supera i 5 MB.")
+                                    st.stop()
+                                nuova_immagine_b64 = base64.b64encode(dati).decode("ascii")
+                                nuova_immagine_mime = m_immagine.type or "image/png"
+                            db.aggiorna_prodotto(
+                                p["id"], m_nome.strip(), m_descrizione.strip() or None, m_prezzo,
+                                1 if m_disponibile else 0, nuova_immagine_b64, nuova_immagine_mime,
+                            )
+                            st.session_state.prodotto_in_modifica = None
+                            st.success("Prodotto aggiornato.")
+                            st.rerun()
+                    if annulla_click:
+                        st.session_state.prodotto_in_modifica = None
+                        st.rerun()
+
+
+# ---------------------------------------------------------------------------
 # Pagina: iscritti alla newsletter (solo admin)
 # ---------------------------------------------------------------------------
 
@@ -2411,5 +2663,9 @@ else:
         pagina_guide()
     elif view == "eventi":
         pagina_eventi()
+    elif view == "articoli":
+        pagina_articoli()
+    elif view == "negozio":
+        pagina_negozio()
     else:
         pagina_dashboard()

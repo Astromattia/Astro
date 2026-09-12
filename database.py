@@ -151,6 +151,34 @@ def init_db():
         )
     """)
 
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS articoli (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            titolo TEXT NOT NULL,
+            categoria TEXT NOT NULL DEFAULT 'Generale',
+            contenuto TEXT NOT NULL,
+            immagine_b64 TEXT,
+            immagine_mime TEXT,
+            creato_da TEXT,
+            creato_il TEXT NOT NULL,
+            aggiornato_il TEXT
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS prodotti_negozio (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nome TEXT NOT NULL,
+            descrizione TEXT,
+            prezzo REAL NOT NULL DEFAULT 0,
+            immagine_b64 TEXT,
+            immagine_mime TEXT,
+            disponibile INTEGER NOT NULL DEFAULT 1,
+            creato_da TEXT,
+            creato_il TEXT NOT NULL
+        )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -403,6 +431,102 @@ def aggiorna_evento_calendario(id_evento, titolo, descrizione, data_evento, url)
 def elimina_evento_calendario(id_evento):
     conn = get_connection()
     conn.execute("DELETE FROM eventi_calendario WHERE id=?", (id_evento,))
+    conn.commit()
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Articoli (notizie scritte dall'amministratore, non da fonti esterne)
+# ---------------------------------------------------------------------------
+
+def elenco_articoli():
+    conn = get_connection()
+    righe = conn.execute("SELECT * FROM articoli ORDER BY creato_il DESC").fetchall()
+    conn.close()
+    return righe
+
+
+def inserisci_articolo(titolo, categoria, contenuto, immagine_b64, immagine_mime, creato_da):
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO articoli (titolo, categoria, contenuto, immagine_b64, immagine_mime, "
+        "creato_da, creato_il) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (titolo, categoria, contenuto, immagine_b64, immagine_mime, creato_da,
+         datetime.utcnow().isoformat(timespec="seconds")),
+    )
+    conn.commit()
+    conn.close()
+
+
+def aggiorna_articolo(id_articolo, titolo, categoria, contenuto, immagine_b64, immagine_mime):
+    conn = get_connection()
+    if immagine_b64 is not None:
+        conn.execute(
+            "UPDATE articoli SET titolo=?, categoria=?, contenuto=?, immagine_b64=?, "
+            "immagine_mime=?, aggiornato_il=? WHERE id=?",
+            (titolo, categoria, contenuto, immagine_b64, immagine_mime,
+             datetime.utcnow().isoformat(timespec="seconds"), id_articolo),
+        )
+    else:
+        conn.execute(
+            "UPDATE articoli SET titolo=?, categoria=?, contenuto=?, aggiornato_il=? WHERE id=?",
+            (titolo, categoria, contenuto,
+             datetime.utcnow().isoformat(timespec="seconds"), id_articolo),
+        )
+    conn.commit()
+    conn.close()
+
+
+def elimina_articolo(id_articolo):
+    conn = get_connection()
+    conn.execute("DELETE FROM articoli WHERE id=?", (id_articolo,))
+    conn.commit()
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Prodotti del negozio (catalogo: nessun pagamento reale collegato)
+# ---------------------------------------------------------------------------
+
+def elenco_prodotti():
+    conn = get_connection()
+    righe = conn.execute("SELECT * FROM prodotti_negozio ORDER BY creato_il DESC").fetchall()
+    conn.close()
+    return righe
+
+
+def inserisci_prodotto(nome, descrizione, prezzo, immagine_b64, immagine_mime, creato_da):
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO prodotti_negozio (nome, descrizione, prezzo, immagine_b64, immagine_mime, "
+        "disponibile, creato_da, creato_il) VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
+        (nome, descrizione, prezzo, immagine_b64, immagine_mime, creato_da,
+         datetime.utcnow().isoformat(timespec="seconds")),
+    )
+    conn.commit()
+    conn.close()
+
+
+def aggiorna_prodotto(id_prodotto, nome, descrizione, prezzo, disponibile, immagine_b64, immagine_mime):
+    conn = get_connection()
+    if immagine_b64 is not None:
+        conn.execute(
+            "UPDATE prodotti_negozio SET nome=?, descrizione=?, prezzo=?, disponibile=?, "
+            "immagine_b64=?, immagine_mime=? WHERE id=?",
+            (nome, descrizione, prezzo, disponibile, immagine_b64, immagine_mime, id_prodotto),
+        )
+    else:
+        conn.execute(
+            "UPDATE prodotti_negozio SET nome=?, descrizione=?, prezzo=?, disponibile=? WHERE id=?",
+            (nome, descrizione, prezzo, disponibile, id_prodotto),
+        )
+    conn.commit()
+    conn.close()
+
+
+def elimina_prodotto(id_prodotto):
+    conn = get_connection()
+    conn.execute("DELETE FROM prodotti_negozio WHERE id=?", (id_prodotto,))
     conn.commit()
     conn.close()
 
