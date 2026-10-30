@@ -16,18 +16,17 @@ st.sidebar.markdown("---")
 
 # Menu di navigazione principale semplice
 st.sidebar.markdown("### 🧭 NAVIGAZIONE")
-st.sidebar.info("Usa il menu principale del sito per viaggiare tra le sezioni storiche, l'osservatorio e i quiz!")
+st.sidebar.info("Usa il menu principale per viaggiare tra le sezioni del sito!")
 
-# --- IL PONTE SPAZIALE (Collegamento a Base44) ---
+# --- IL PONTE SPAZIALE (Collegamento corretto a Base44) ---
 st.sidebar.markdown("---")
-st.sidebar.markdown("### 🛰️ Monitora i Lanci Live!")
-st.sidebar.warning("Mancano poche ore ai prossimi eventi spaziali! Controlla il countdown in tempo reale su CosmosDB:")
+st.sidebar.markdown("### 🛰️ Lanci in Tempo Reale")
 
-# Il bottone magico che si collega a Base44
-st.sidebar.link_button("👉 Entra su CosmosDB Live", "https://base44.app")
+# Il bottone magico con il link GIUSTO del tuo sito
+st.sidebar.link_button("🚀 Apri CosmosDB Live", "https://archiviospaziale.base44.app/")
 
 st.sidebar.markdown("---")
-st.sidebar.caption("Sviluppato con 💙 da Mattia | v2.0")
+st.sidebar.caption("Sviluppato con 💙 da Mattia | v2.2")
 
 
 # --- CONTENUTO DELLA PAGINA DI BENVENUTO ---
