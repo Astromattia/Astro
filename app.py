@@ -1,4 +1,5 @@
 import streamlit as st
+import requests
 
 # Configurazione iniziale della pagina in Dark Mode
 st.set_page_config(
@@ -26,14 +27,14 @@ st.sidebar.markdown("### 🛰️ Lanci in Tempo Reale")
 st.sidebar.link_button("🚀 Apri CosmosDB Live", "https://archiviospaziale.base44.app/")
 
 st.sidebar.markdown("---")
-st.sidebar.caption("Sviluppato con 💙 da Mattia | v2.3")
+st.sidebar.caption("Sviluppato con 💙 da Mattia | v2.4")
 
 
 # --- CONTENUTO DELLA PAGINA DI BENVENUTO ---
 st.title("📚 Archivio Missioni Spaziali")
 st.markdown("### Cronologia dei voli spaziali, dal programma Mercury alle missioni odierne.")
 
-# Box delle statistiche in evidenza
+# Box delle statistiche storiche (queste sono fisse nel codice)
 col1, col2, col3 = st.columns(3)
 with col1:
     st.metric(label="Missioni Totali", value="34", delta="🚀")
@@ -44,30 +45,41 @@ with col3:
     
 st.markdown("---")
 
-# --- NUOVA SEZIONE: SEGRETI E CURIOSITÀ DELLO SPAZIO ---
-st.subheader("👨‍🚀 Lo sapevi che? Curiosità dalla Stazione Spaziale")
+# --- NUOVA SEZIONE AUTOMATICA: DATI LIVE DALLO SPAZIO ---
+st.subheader("🛰️ Dati in Tempo Reale dalla Stazione Spaziale (ISS)")
 
+try:
+    # Chiamata API gratuita per scoprire quante persone ci sono nello spazio
+    risposta = requests.get("http://open-notify.org", timeout=5).json()
+    numero_astronauti = risposta["number"]
+    
+    col_live1, col_live2 = st.columns(2)
+    with col_live1:
+        st.success(f"👨‍🚀 In questo preciso momento ci sono **{numero_astronauti} astronauti** nello spazio in orbita intorno a noi!")
+    with col_live2:
+        st.info("🌍 La ISS compie un giro completo della Terra ogni 90 minuti a 27.600 km/h!")
+except:
+    st.write("Impossibile connettersi con la Stazione Spaziale al momento. Riprova più tardi!")
+
+st.markdown("---")
+
+# --- SEZIONE CURIOSITÀ DELLO SPAZIO ---
+st.subheader("💡 Curiosità dal Cosmo")
 col_info1, col_info2 = st.columns(2)
 
 with col_info1:
     st.markdown("""
-    #### 🛰️ La casa umana tra le stelle
-    La **Stazione Spaziale Internazionale (ISS)** è un laboratorio grandissimo (come un campo da calcio!) che si trova in orbita intorno alla Terra a circa **400 chilometri di altezza**. 
-    
-    * **Velocità pazzesca:** Viaggia a ben **27.600 km/h**! 
-    * **Viaggio nel tempo:** Compie un giro completo intorno alla Terra ogni 90 minuti. Questo significa che gli astronauti a bordo vedono ben **16 albe e 16 tramonti** ogni singolo giorno!
+    #### 🧊 Vivere a gravità zero
+    Nello spazio il corpo umano si comporta in modo strano e gli scienziati devono allenarsi tantissimo:
+    * **Si diventa più alti:** Senza la gravità della Terra che schiaccia la colonna vertebrale, gli astronauti possono diventare fino a **5 centimetri più alti**!
     """)
 
 with col_info2:
     st.markdown("""
-    #### 🧊 Vivere a gravità zero
-    Nello spazio il corpo umano si comporta in modo strano e gli scienziati devono allenarsi tantissimo:
-    
-    * **Si diventa più alti:** Senza la gravità della Terra che schiaccia la colonna vertebrale, gli astronauti possono diventare fino a **5 centimetri più alti** mentre si trovano nello spazio!
-    * **Niente lacrime:** Se piangi nello spazio, le lacrime non scivolano via sulle guance, ma formano una bollicina d'acqua attorno all'occhio!
+    #### 🌌 Il silenzio del vuoto
+    * **Niente suoni:** Nello spazio profondo c'è un silenzio totale. Il suono ha bisogno dell'aria per viaggiare, e dato che nello spazio non c'è atmosfera, le esplosioni stellari avvengono nel silenzio più assoluto!
     """)
 
 st.markdown("---")
-
 st.subheader("🪐 Primi passi nel cosmo")
-st.success("Scegli le voci dal menu per esplorare i dati dello Sputnik, i quiz e l'assistente spaziale!")
+st.caption("Scegli le voci dal menu per esplorare i dati dello Sputnik, i quiz e l'assistente spaziale!")
